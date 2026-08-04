@@ -2,8 +2,8 @@ use crate::storage;
 use soroban_sdk::{
     contract, contractevent, contractimpl, vec, Address, Env, IntoVal, String, Symbol, Val,
 };
-use task_registry::{Task, TaskStatus};
 pub use storage::{Verification, VerificationStatus};
+use task_registry::{Task, TaskStatus};
 
 /// Fetches the task from the registry and enforces that it is active and not
 /// expired. Returns the task so the caller can inspect `reward_amount`.

@@ -142,9 +142,10 @@ pub fn read_verification_keys(e: &Env) -> Vec<VerificationKey> {
 pub fn add_total_paid(e: &Env, amount: i128) {
     let key = DataKey::TotalPaid;
     let current: i128 = e.storage().instance().get(&key).unwrap_or(0);
-    e.storage()
-        .instance()
-        .set(&key, &(current.checked_add(amount).expect("total_paid overflow")));
+    e.storage().instance().set(
+        &key,
+        &(current.checked_add(amount).expect("total_paid overflow")),
+    );
 }
 
 pub fn read_total_paid(e: &Env) -> i128 {
@@ -157,5 +158,8 @@ pub fn set_paused(e: &Env, paused: bool) {
 }
 
 pub fn is_paused(e: &Env) -> bool {
-    e.storage().instance().get(&DataKey::Paused).unwrap_or(false)
+    e.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
 }
