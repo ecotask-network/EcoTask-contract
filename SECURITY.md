@@ -70,8 +70,9 @@ The following are **out of scope**:
 
 Key security properties the contracts are designed to uphold:
 
-- **Minting is admin-only.** Only the address stored as `admin` in the
-  eco-token contract can mint new ECO tokens.
+- **Minting is minter-only.** Only the address stored as `minter` in the
+  eco-token contract can mint new ECO tokens. The admin assigns the minter
+  via `set_minter()`. In production, the minter is the reward engine contract.
 - **Oracle is separated from admin.** The reward-engine enforces that the
   oracle and admin must be different addresses at initialization time.
 - **Double-claim prevention.** The task-registry records each
