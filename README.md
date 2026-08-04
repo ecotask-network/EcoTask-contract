@@ -270,6 +270,28 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) to get started.
 
 ---
 
+## 🗺️ Roadmap
+
+| Phase | Milestone | Status |
+|-------|-----------|--------|
+| **Phase 1** | Core contracts (token, registry, reward engine) | ✅ Done |
+| **Phase 2** | Token minter role, reward guards, emergency pause, admin governance | ✅ Done |
+| **Phase 3** | Formal security audit | 🔜 Upcoming |
+| **Phase 4** | Testnet deployment + backend integration | 🔜 Upcoming |
+| **Phase 5** | Bug bounty programme launch | 📋 Planned |
+| **Phase 6** | Mainnet launch | 📋 Planned |
+| **Phase 7** | DAO governance contract | 📋 Planned |
+| **Phase 8** | Cross-chain reward bridging | 🔮 Future |
+
+### Near-term priorities
+
+- Formal audit of all three contracts by an independent Soroban auditor
+- Testnet deployment with live oracle and backend integration
+- On-chain governance for task sponsor verification and platform parameter updates
+- Tokenomics modelling for sustainable reward emissions
+
+---
+
 ## 📄 License
 
 MIT — see [LICENSE](./LICENSE) for details.
