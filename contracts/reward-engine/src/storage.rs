@@ -40,6 +40,8 @@ pub enum DataKey {
     UserVerifications(Address),
     TotalPaid,
     Paused,
+    UserCooldown,
+    LastRewardLedger(Address),
 }
 
 #[derive(Clone, Debug)]
@@ -205,6 +207,31 @@ pub fn add_total_paid(e: &Env, amount: i128) {
 pub fn read_total_paid(e: &Env) -> i128 {
     let key = DataKey::TotalPaid;
     e.storage().instance().get(&key).unwrap_or(0)
+}
+
+/// Sets the minimum number of ledgers a user must wait between two reward
+/// approvals. A value of 0 disables the cooldown entirely.
+pub fn write_user_cooldown(e: &Env, ledgers: u64) {
+    e.storage().instance().set(&DataKey::UserCooldown, &ledgers);
+}
+
+pub fn read_user_cooldown(e: &Env) -> u64 {
+    e.storage()
+        .instance()
+        .get(&DataKey::UserCooldown)
+        .unwrap_or(0)
+}
+
+pub fn write_last_reward_ledger(e: &Env, user: &Address, ledger: u64) {
+    let key = DataKey::LastRewardLedger(user.clone());
+    e.storage().persistent().set(&key, &ledger);
+}
+
+/// Returns `None` if the user has never received a reward, distinguishing
+/// that case from a legitimate ledger value of 0.
+pub fn read_last_reward_ledger(e: &Env, user: &Address) -> Option<u64> {
+    let key = DataKey::LastRewardLedger(user.clone());
+    e.storage().persistent().get(&key)
 }
 
 pub fn set_paused(e: &Env, paused: bool) {
