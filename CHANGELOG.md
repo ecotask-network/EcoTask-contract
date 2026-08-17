@@ -11,6 +11,25 @@ package version is bumped.
 
 ## [Unreleased]
 
+### Added
+
+#### `reward-engine`
+
+- `set_user_cooldown(caller: Address, min_ledgers_between_rewards: u64)` —
+  admin-only; sets the minimum number of ledgers a user must wait between
+  reward approvals. `0` disables the cooldown (the default).
+
+Storage layout additions:
+
+| Scope | Key | Value |
+|-------|-----|-------|
+| Instance | `DataKey::UserCooldown` | `u64` |
+| Persistent | `DataKey::LastRewardLedger(Address)` | `u64` |
+
+Error strings:
+
+- `engine: user cooldown active`
+
 ## [0.1.0-alpha] - 2026-08-17
 
 This entry records the current source interface as the baseline for future
