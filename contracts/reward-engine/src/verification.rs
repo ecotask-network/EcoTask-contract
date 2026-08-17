@@ -147,14 +147,26 @@ impl RewardEngine {
     }
 
     pub fn set_oracle(e: Env, caller: Address, new_oracle: Address) {
-        caller.require_auth();
-        require_admin(&e, &caller);
-        if new_oracle == caller {
-            panic!("engine: oracle must be different from admin");
-        }
-        storage::write_oracles(&e, &vec![&e, new_oracle]);
+    caller.require_auth();
+    require_admin(&e, &caller);
+    if new_oracle == caller {
+        panic!("engine: oracle must be different from admin");
     }
 
+    let old_oracles = storage::read_oracles(&e);
+    // Emit removal events for all old oracles except the new one
+    for oracle in old_oracles.iter() {
+        if oracle != new_oracle {
+            OracleRemovedEvent { oracle }.publish(&e);
+        }
+    }
+
+    // Overwrite the roster with the single new oracle
+    storage::write_oracles(&e, &vec![&e, new_oracle.clone()]);
+
+    // Emit addition event for the new oracle
+    OracleAddedEvent { oracle: new_oracle }.publish(&e);
+    }
     /// Registers an additional oracle. Any registered oracle may submit,
     /// approve, or reject proofs.
     pub fn add_oracle(e: Env, caller: Address, new_oracle: Address) {
