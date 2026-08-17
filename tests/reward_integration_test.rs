@@ -1,6 +1,7 @@
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::testutils::BytesN;
 use soroban_sdk::{Address, Env, String};
+use soroban_sdk::Symbol;
 
 fn deploy_token(e: &Env, admin: &Address) -> Address {
     let token_id = e.register(eco_token::TokenContract, ());
@@ -449,4 +450,135 @@ fn test_oracle_approval_fails_for_desponsored_creator() {
     reg_client.remove_sponsor(&admin, &sponsor);
 
     engine_client.approve_proof(&oracle, &user, &task_id, &500);
+}
+
+#[test]
+fn test_set_oracle_evicts_existing_oracles_with_events() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle1 = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let token_id = deploy_token(&e, &admin);
+    let reg_id = deploy_registry(&e, &admin);
+    let engine_id = deploy_engine(&e, &admin, &token_id, &reg_id, &oracle1);
+    let engine_client = reward_engine::RewardEngineClient::new(&e, &engine_id);
+
+    // Add a second oracle
+    let oracle2 = Address::generate(&e);
+    engine_client.add_oracle(&admin, &oracle2);
+
+    let new_oracle = Address::generate(&e);
+
+    let events_before = e.events().all().count();
+
+    // Call set_oracle
+    engine_client.set_oracle(&admin, &new_oracle);
+
+    let events = e.events().all().collect::<Vec<_>>();
+    let new_events = &events[events_before..];
+
+    // Expect 2 removals + 1 addition
+    assert_eq!(new_events.len(), 3);
+
+    // Filter removal events by topic
+    let removal_events: Vec<_> = new_events.iter()
+        .filter(|ev| {
+            if let Some(topic) = ev.topics().first() {
+                topic.clone().try_into().map(|s: Symbol| s == Symbol::new(&e, "OracleRemovedEvent")).unwrap_or(false)
+            } else {
+                false
+            }
+        })
+        .collect();
+    let addition_events: Vec<_> = new_events.iter()
+        .filter(|ev| {
+            if let Some(topic) = ev.topics().first() {
+                topic.clone().try_into().map(|s: Symbol| s == Symbol::new(&e, "OracleAddedEvent")).unwrap_or(false)
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    assert_eq!(removal_events.len(), 2);
+    assert_eq!(addition_events.len(), 1);
+
+    // Check evicted oracles
+    let removed_addresses: Vec<Address> = removal_events.iter()
+        .map(|ev| ev.topics().get(1).unwrap().clone().try_into().unwrap())
+        .collect();
+    assert!(removed_addresses.contains(&oracle1));
+    assert!(removed_addresses.contains(&oracle2));
+
+    // Check added oracle
+    let added_address = addition_events[0].topics().get(1).unwrap().clone().try_into().unwrap();
+    assert_eq!(added_address, new_oracle);
+
+    // Verify final roster
+    let oracles = engine_client.get_oracles();
+    assert_eq!(oracles.len(), 1);
+    assert_eq!(oracles.get(0).unwrap(), new_oracle);
+}
+
+#[test]
+fn test_set_oracle_with_existing_oracle_removes_others() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle1 = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let token_id = deploy_token(&e, &admin);
+    let reg_id = deploy_registry(&e, &admin);
+    let engine_id = deploy_engine(&e, &admin, &token_id, &reg_id, &oracle1);
+    let engine_client = reward_engine::RewardEngineClient::new(&e, &engine_id);
+
+    let oracle2 = Address::generate(&e);
+    engine_client.add_oracle(&admin, &oracle2);
+
+    let events_before = e.events().all().count();
+
+    // Set to oracle1 (already present)
+    engine_client.set_oracle(&admin, &oracle1);
+
+    let events = e.events().all().collect::<Vec<_>>();
+    let new_events = &events[events_before..];
+
+    // Expect 1 removal (oracle2) + 1 addition (oracle1)
+    assert_eq!(new_events.len(), 2);
+
+    let removal_events: Vec<_> = new_events.iter()
+        .filter(|ev| {
+            if let Some(topic) = ev.topics().first() {
+                topic.clone().try_into().map(|s: Symbol| s == Symbol::new(&e, "OracleRemovedEvent")).unwrap_or(false)
+            } else {
+                false
+            }
+        })
+        .collect();
+    let addition_events: Vec<_> = new_events.iter()
+        .filter(|ev| {
+            if let Some(topic) = ev.topics().first() {
+                topic.clone().try_into().map(|s: Symbol| s == Symbol::new(&e, "OracleAddedEvent")).unwrap_or(false)
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    assert_eq!(removal_events.len(), 1);
+    assert_eq!(addition_events.len(), 1);
+
+    let removed_address = removal_events[0].topics().get(1).unwrap().clone().try_into().unwrap();
+    assert_eq!(removed_address, oracle2);
+    let added_address = addition_events[0].topics().get(1).unwrap().clone().try_into().unwrap();
+    assert_eq!(added_address, oracle1);
+
+    let oracles = engine_client.get_oracles();
+    assert_eq!(oracles.len(), 1);
+    assert_eq!(oracles.get(0).unwrap(), oracle1);
 }
