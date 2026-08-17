@@ -1568,7 +1568,15 @@ mod test {
 
     /// Shared fixture for cooldown tests: one admin/oracle/user plus two
     /// separate tasks so the same user can be rewarded twice.
-    fn setup_cooldown() -> (Env, Address, Address, Address, u64, u64, RewardEngineClient<'static>) {
+    fn setup_cooldown() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        u64,
+        u64,
+        RewardEngineClient<'static>,
+    ) {
         let e = Env::default();
         e.mock_all_auths_allowing_non_root_auth();
 
