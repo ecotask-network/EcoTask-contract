@@ -75,6 +75,22 @@ pub struct TokenContract;
 
 #[contractimpl]
 impl TokenContract {
+    /// Initializes the token contract with admin, metadata, and initial minter.
+    ///
+    /// # Arguments
+    ///
+    /// * `admin` - The initial administrator address who can configure the contract
+    /// * `name` - The human-readable name of the token (e.g., "ECO")
+    /// * `symbol` - The token symbol/ticker (e.g., "ECO")
+    /// * `decimal` - The number of decimal places for display purposes
+    ///
+    /// # Panics
+    ///
+    /// Panics if the contract has already been initialized.
+    ///
+    /// # Auth
+    ///
+    /// No authentication required. Can only be called once during deployment.
     pub fn initialize(e: Env, admin: Address, name: String, symbol: String, decimal: u32) {
         if storage::has_admin(&e) {
             panic!("token: already initialized");
@@ -85,6 +101,21 @@ impl TokenContract {
         storage::write_supply(&e, 0);
     }
 
+    /// Mints new tokens to a specified address.
+    ///
+    /// # Arguments
+    ///
+    /// * `to` - The address to receive the newly minted tokens
+    /// * `amount` - The amount of tokens to mint (must be positive)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if `amount <= 0`
+    /// * Panics if minting would exceed the max supply cap (if set)
+    ///
+    /// # Auth
+    ///
+    /// Requires the caller to be the current minter address.
     pub fn mint(e: Env, to: Address, amount: i128) {
         let minter = storage::read_minter(&e);
         minter.require_auth();
@@ -118,6 +149,22 @@ impl TokenContract {
         .publish(&e);
     }
 
+    /// Transfers tokens from one address to another.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - The address sending the tokens (must authorize the transfer)
+    /// * `to` - The address receiving the tokens
+    /// * `amount` - The amount of tokens to transfer (must be positive)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if `amount <= 0`
+    /// * Panics if `from` has insufficient balance
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the `from` address.
     pub fn transfer(e: Env, from: Address, to: Address, amount: i128) {
         from.require_auth();
 
@@ -151,16 +198,35 @@ impl TokenContract {
         .publish(&e);
     }
 
+    /// Returns the token balance of a given address.
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The address to query the balance for
+    ///
+    /// # Returns
+    ///
+    /// The current balance of the address as an i128.
     pub fn balance(e: Env, id: Address) -> i128 {
         storage::read_balance(&e, &id)
     }
 
+    /// Returns the total supply of tokens currently in circulation.
+    ///
+    /// # Returns
+    ///
+    /// The total supply as an i128.
     pub fn total_supply(e: Env) -> i128 {
         storage::read_supply(&e)
     }
 
     /// The hard cap on total supply, or `i128::MAX` if no cap has been set.
+    ///
     /// Minting is rejected whenever it would push the supply past this bound.
+    ///
+    /// # Returns
+    ///
+    /// The maximum supply cap, or i128::MAX if no cap is configured.
     pub fn max_supply(e: Env) -> i128 {
         storage::read_max_supply(&e).unwrap_or(i128::MAX)
     }
@@ -168,6 +234,21 @@ impl TokenContract {
     /// Sets the hard supply cap. Admin-only. The cap must be positive and not
     /// lower than the current supply, so an already-oversubscribed token can
     /// never be retroactively frozen into an invalid state.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `max_supply` - The new maximum supply cap (must be positive and >= current supply)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if caller is not the admin
+    /// * Panics if `max_supply <= 0`
+    /// * Panics if `max_supply < current_supply`
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn set_max_supply(e: Env, caller: Address, max_supply: i128) {
         caller.require_auth();
         let admin = storage::read_admin(&e);
@@ -185,24 +266,58 @@ impl TokenContract {
         MaxSupplyUpdatedEvent { admin, max_supply }.publish(&e);
     }
 
+    /// Returns the token name.
+    ///
+    /// # Returns
+    ///
+    /// The human-readable name of the token.
     pub fn name(e: Env) -> String {
         storage::read_name(&e)
     }
 
+    /// Returns the token symbol/ticker.
+    ///
+    /// # Returns
+    ///
+    /// The token symbol (e.g., "ECO").
     pub fn symbol(e: Env) -> String {
         storage::read_symbol(&e)
     }
 
+    /// Returns the number of decimal places for token display.
+    ///
+    /// # Returns
+    ///
+    /// The decimal precision as a u32.
     pub fn decimal(e: Env) -> u32 {
         storage::read_decimal(&e)
     }
 
     /// SEP-0041 alias for `decimal`.
+    ///
+    /// # Returns
+    ///
+    /// The number of decimal places for token display.
     pub fn decimals(e: Env) -> u32 {
         storage::read_decimal(&e)
     }
 
     /// Updates token metadata (SEP-0041 `set_metadata`). Admin-only.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `name` - The new token name
+    /// * `symbol` - The new token symbol
+    /// * `decimal` - The new decimal precision
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn set_metadata(e: Env, caller: Address, name: String, symbol: String, decimal: u32) {
         caller.require_auth();
         let admin = storage::read_admin(&e);
@@ -220,10 +335,30 @@ impl TokenContract {
         .publish(&e);
     }
 
+    /// Returns the current admin address.
+    ///
+    /// # Returns
+    ///
+    /// The address of the current administrator.
     pub fn admin(e: Env) -> Address {
         storage::read_admin(&e)
     }
 
+    /// Transfers the admin role to a new address.
+    ///
+    /// # Arguments
+    ///
+    /// * `current_admin` - The current admin address (must authorize)
+    /// * `new_admin` - The new admin address to transfer control to
+    ///
+    /// # Panics
+    ///
+    /// * Panics if `current_admin` is not the stored admin
+    /// * Panics if `new_admin == current_admin`
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the current admin address.
     pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
         let stored_admin = storage::read_admin(&e);
@@ -236,10 +371,29 @@ impl TokenContract {
         storage::write_admin(&e, &new_admin);
     }
 
+    /// Returns the current minter address.
+    ///
+    /// # Returns
+    ///
+    /// The address authorized to mint new tokens.
     pub fn minter(e: Env) -> Address {
         storage::read_minter(&e)
     }
 
+    /// Sets the minter address. Admin-only.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `new_minter` - The new address to authorize as minter
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn set_minter(e: Env, caller: Address, new_minter: Address) {
         caller.require_auth();
         let admin = storage::read_admin(&e);
@@ -249,6 +403,21 @@ impl TokenContract {
         storage::write_minter(&e, &new_minter);
     }
 
+    /// Burns tokens from an address, reducing the total supply.
+    ///
+    /// # Arguments
+    ///
+    /// * `from` - The address to burn tokens from (must authorize)
+    /// * `amount` - The amount of tokens to burn (must be positive)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if `amount <= 0`
+    /// * Panics if `from` has insufficient balance
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the `from` address.
     pub fn burn(e: Env, from: Address, amount: i128) {
         from.require_auth();
 
@@ -277,6 +446,23 @@ impl TokenContract {
         .publish(&e);
     }
 
+    /// Approves a spender to transfer tokens on behalf of an owner.
+    ///
+    /// # Arguments
+    ///
+    /// * `owner` - The address owning the tokens (must authorize)
+    /// * `spender` - The address being authorized to spend on behalf of owner
+    /// * `amount` - The maximum amount the spender can transfer (must be non-negative)
+    /// * `expiration_ledger` - The ledger sequence number at which this allowance expires
+    ///
+    /// # Panics
+    ///
+    /// * Panics if `amount < 0`
+    /// * Panics if `expiration_ledger <= current_ledger_sequence`
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the owner address.
     pub fn approve(e: Env, owner: Address, spender: Address, amount: i128, expiration_ledger: u32) {
         owner.require_auth();
 
@@ -302,6 +488,16 @@ impl TokenContract {
         .publish(&e);
     }
 
+    /// Returns the current allowance for a spender to transfer tokens from an owner.
+    ///
+    /// # Arguments
+    ///
+    /// * `owner` - The address that granted the allowance
+    /// * `spender` - The address that was granted the allowance
+    ///
+    /// # Returns
+    ///
+    /// The current allowance amount, or 0 if no allowance exists or it has expired.
     pub fn allowance(e: Env, owner: Address, spender: Address) -> i128 {
         match storage::read_allowance(&e, &owner, &spender) {
             Some(a) => {
@@ -319,11 +515,23 @@ impl TokenContract {
         }
     }
 
-    /// Returns `None` when no allowance exists for the (owner, spender) pair.
-    /// Otherwise returns `Some((amount, expiration_ledger))`, where `amount` is
-    /// `0` for an allowance that has already expired (so the caller can
-    /// distinguish "never approved" from "approval expired") and the live
-    /// remaining `amount` for an allowance that is still valid.
+    /// Returns an allowance together with its expiration ledger.
+    ///
+    /// # Arguments
+    ///
+    /// * `owner` - The address that granted the allowance
+    /// * `spender` - The address that was granted the allowance
+    ///
+    /// # Returns
+    ///
+    /// Returns `None` when no allowance exists for the `(owner, spender)` pair.
+    /// Otherwise, returns `Some((amount, expiration_ledger))`. The amount is zero
+    /// when the allowance has expired, allowing callers to distinguish an expired
+    /// approval from one that was never created.
+    ///
+    /// # Auth
+    ///
+    /// No authentication is required.
     pub fn allowance_with_expiry(e: Env, owner: Address, spender: Address) -> Option<(i128, u32)> {
         let current_sequence = e.ledger().sequence();
         match storage::read_allowance(&e, &owner, &spender) {
@@ -338,6 +546,25 @@ impl TokenContract {
         }
     }
 
+    /// Transfers tokens from one address to another using an approved allowance.
+    ///
+    /// # Arguments
+    ///
+    /// * `spender` - The address authorized to spend (must authorize)
+    /// * `from` - The address owning the tokens
+    /// * `to` - The address receiving the tokens
+    /// * `amount` - The amount of tokens to transfer (must be positive)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if `amount <= 0`
+    /// * Panics if no allowance exists or it has expired
+    /// * Panics if the allowance is insufficient for the transfer amount
+    /// * Panics if `from` has insufficient balance
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the spender address.
     pub fn transfer_from(e: Env, spender: Address, from: Address, to: Address, amount: i128) {
         spender.require_auth();
 

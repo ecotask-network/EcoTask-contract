@@ -60,6 +60,19 @@ pub struct RegistryContract;
 
 #[contractimpl]
 impl RegistryContract {
+    /// Initializes the registry contract with an admin address.
+    ///
+    /// # Arguments
+    ///
+    /// * `admin` - The initial administrator address
+    ///
+    /// # Panics
+    ///
+    /// Panics if the contract has already been initialized.
+    ///
+    /// # Auth
+    ///
+    /// No authentication required. Can only be called once during deployment.
     pub fn initialize(e: Env, admin: Address) {
         if storage::has_admin(&e) {
             panic!("registry: already initialized");
@@ -67,6 +80,22 @@ impl RegistryContract {
         storage::write_admin(&e, &admin);
     }
 
+    /// Adds a sponsor address to the approved sponsors list.
+    ///
+    /// Sponsors are authorized to create and complete tasks.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `sponsor` - The address to add as a sponsor
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn add_sponsor(e: Env, caller: Address, sponsor: Address) {
         caller.require_auth();
         access::require_admin(&e, &caller);
@@ -74,6 +103,20 @@ impl RegistryContract {
         SponsorAddedEvent { sponsor }.publish(&e);
     }
 
+    /// Removes a sponsor address from the approved sponsors list.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `sponsor` - The address to remove from sponsors
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn remove_sponsor(e: Env, caller: Address, sponsor: Address) {
         caller.require_auth();
         access::require_admin(&e, &caller);
@@ -81,6 +124,32 @@ impl RegistryContract {
         SponsorRemovedEvent { sponsor }.publish(&e);
     }
 
+    /// Creates a new task in the registry.
+    ///
+    /// # Arguments
+    ///
+    /// * `creator` - The address creating the task (must be a sponsor or admin)
+    /// * `task_type` - A string describing the type of task (e.g., "tree-planting")
+    /// * `location_hash` - SHA-256 hash of the task location (32 bytes)
+    /// * `reward_amount` - The maximum ECO reward per completion (must be positive)
+    /// * `max_completions` - The maximum number of times this task can be completed (must be positive)
+    /// * `expires_at` - The ledger timestamp when this task expires (must be in the future)
+    ///
+    /// # Returns
+    ///
+    /// The ID of the newly created task.
+    ///
+    /// # Panics
+    ///
+    /// * Panics if `task_type` is empty
+    /// * Panics if `reward_amount <= 0`
+    /// * Panics if `max_completions == 0`
+    /// * Panics if `expires_at` is in the past
+    /// * Panics if creator is not a sponsor or admin
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the creator address, which must be a sponsor or admin.
     pub fn create_task(
         e: Env,
         creator: Address,
@@ -130,9 +199,27 @@ impl RegistryContract {
         task_id
     }
 
-    // `status` is the last value written to storage: a task past its
-    // `expires_at` still reads `Active` until `expire_task_permissionless` (or admin's
-    // `expire_task`) runs. See `get_task_live_status` for the effective status.
+    /// Retrieves a task by its ID.
+    ///
+    /// The returned status is the last value written to storage. An active task whose
+    /// deadline has passed still reads as active until an expiry function persists the
+    /// change. Use `get_task_live_status` to obtain its effective status.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The ID of the task to retrieve
+    ///
+    /// # Returns
+    ///
+    /// The task with its stored status.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no task exists with the given ID.
+    ///
+    /// # Auth
+    ///
+    /// No authentication is required.
     pub fn get_task(e: Env, task_id: u64) -> Task {
         match storage::read_task(&e, task_id) {
             Some(task) => task,
@@ -140,9 +227,27 @@ impl RegistryContract {
         }
     }
 
-    /// Same as `get_task`, but reports `Expired` once `expires_at` has
-    /// passed even if storage still says `Active`. Read-only — call
-    /// `expire_task_permissionless` to persist the effective status.
+    /// Retrieves a task with its effective status at the current ledger timestamp.
+    ///
+    /// Unlike `get_task`, this reports an active task as expired after its deadline,
+    /// even if the stored status has not been updated. This function is read-only; use
+    /// `expire_task_permissionless` to persist the expired status.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The ID of the task to retrieve
+    ///
+    /// # Returns
+    ///
+    /// The task with its effective status.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no task exists with the given ID.
+    ///
+    /// # Auth
+    ///
+    /// No authentication is required.
     pub fn get_task_live_status(e: Env, task_id: u64) -> Task {
         let mut task = match storage::read_task(&e, task_id) {
             Some(task) => task,
@@ -156,6 +261,30 @@ impl RegistryContract {
         task
     }
 
+    /// Marks a task as completed for a specific user.
+    ///
+    /// This records that the user has successfully completed the task and increments
+    /// the task's completion count. If the task reaches its max completions, its
+    /// status is changed to Completed.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address marking the task as complete (must be a sponsor or admin)
+    /// * `task_id` - The ID of the task to mark as complete
+    /// * `user` - The user address that completed the task
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if the task creator's sponsor status has been revoked
+    /// * Panics if the task is not Active
+    /// * Panics if the task has expired
+    /// * Panics if the user has already completed this task (double-claim prevention)
+    /// * Panics if the task has reached its max completions
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the caller address, which must be a sponsor or admin.
     pub fn complete_task(e: Env, caller: Address, task_id: u64, user: Address) {
         caller.require_auth();
         access::require_sponsor(&e, &caller);
@@ -194,6 +323,22 @@ impl RegistryContract {
         TaskCompletedEvent { user, task_id }.publish(&e);
     }
 
+    /// Force-expires an active task.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `task_id` - The ID of the task to expire
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if the task is not Active
+    /// * Panics if caller is not the admin
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn expire_task(e: Env, caller: Address, task_id: u64) {
         caller.require_auth();
         access::require_admin(&e, &caller);
@@ -211,9 +356,24 @@ impl RegistryContract {
         storage::write_task(&e, &task);
     }
 
-    /// Permissionless sweep: flips an `Active` task to `Expired` once its
-    /// deadline has passed. No `require_auth`, so any indexer or user can
-    /// keep storage in sync instead of waiting on admin's `expire_task`.
+    /// Persists an active task as expired after its deadline has passed.
+    ///
+    /// This permissionless operation allows any indexer or user to synchronize the
+    /// stored status without waiting for the administrator to call `expire_task`.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The ID of the task to expire
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if the task is not Active
+    /// * Panics if the task's deadline has not passed
+    ///
+    /// # Auth
+    ///
+    /// No authentication is required.
     pub fn expire_task_permissionless(e: Env, task_id: u64) {
         let mut task = match storage::read_task(&e, task_id) {
             Some(task) => task,
@@ -236,6 +396,24 @@ impl RegistryContract {
     /// Extends the expiry of an active task. Callable by the task creator or
     /// the admin. The new expiry must be strictly later than the current one
     /// (i.e. a genuine extension) and still in the future.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be task creator or admin)
+    /// * `task_id` - The ID of the task to extend
+    /// * `new_expires_at` - The new expiry timestamp (must be > current expiry and in the future)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if caller is not the task creator or admin
+    /// * Panics if the task is not Active
+    /// * Panics if `new_expires_at` is in the past
+    /// * Panics if `new_expires_at` does not extend the current expiry
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the caller address.
     pub fn extend_task_expiry(e: Env, caller: Address, task_id: u64, new_expires_at: u64) {
         caller.require_auth();
         let admin = storage::read_admin(&e);
@@ -269,6 +447,22 @@ impl RegistryContract {
         .publish(&e);
     }
 
+    /// Cancels an active task. Only the task creator can cancel their own task.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be the task creator)
+    /// * `task_id` - The ID of the task to cancel
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if caller is not the task creator
+    /// * Panics if the task is not Active
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the caller address.
     pub fn cancel_task(e: Env, caller: Address, task_id: u64) {
         caller.require_auth();
 
@@ -294,6 +488,22 @@ impl RegistryContract {
         .publish(&e);
     }
 
+    /// Cancels any active task. Admin-only governance function.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `task_id` - The ID of the task to cancel
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if the task is not Active
+    /// * Panics if caller is not the admin
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn admin_cancel_task(e: Env, caller: Address, task_id: u64) {
         caller.require_auth();
         access::require_admin(&e, &caller);
@@ -317,14 +527,38 @@ impl RegistryContract {
         .publish(&e);
     }
 
+    /// Returns the total number of tasks created.
+    ///
+    /// # Returns
+    ///
+    /// The count of tasks created (also the next available task ID).
     pub fn task_count(e: Env) -> u64 {
         storage::read_task_count(&e)
     }
 
+    /// Checks if a specific user has completed a specific task.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The ID of the task to check
+    /// * `user` - The user address to check
+    ///
+    /// # Returns
+    ///
+    /// true if the user has completed the task, false otherwise.
     pub fn is_task_completed(e: Env, task_id: u64, user: Address) -> bool {
         storage::is_completed(&e, task_id, &user)
     }
 
+    /// Returns all task IDs created by a specific creator.
+    ///
+    /// # Arguments
+    ///
+    /// * `creator` - The address of the creator to query
+    ///
+    /// # Returns
+    ///
+    /// A vector of task IDs created by the specified creator.
     pub fn get_tasks_by_creator(e: Env, creator: Address) -> soroban_sdk::Vec<u64> {
         storage::read_creator_tasks(&e, &creator)
     }
@@ -332,6 +566,16 @@ impl RegistryContract {
     /// Pageable slice of the task ids created by `creator`. `cursor` is the
     /// zero-based offset into the creator's full task list and `limit` caps
     /// the number of ids returned.
+    ///
+    /// # Arguments
+    ///
+    /// * `creator` - The address of the creator to query
+    /// * `cursor` - The zero-based offset into the creator's task list
+    /// * `limit` - The maximum number of task IDs to return
+    ///
+    /// # Returns
+    ///
+    /// A vector of up to `limit` task IDs, starting from `cursor`.
     pub fn get_tasks_by_creator_paged(
         e: Env,
         creator: Address,
@@ -348,6 +592,15 @@ impl RegistryContract {
     /// `cursor` is the lowest task id to include (inclusive) and `limit` caps
     /// the number of tasks returned. Safe for off-chain indexers to paginate
     /// through without pulling the entire registry in one call.
+    ///
+    /// # Arguments
+    ///
+    /// * `cursor` - The starting task ID (inclusive)
+    /// * `limit` - The maximum number of tasks to return
+    ///
+    /// # Returns
+    ///
+    /// A vector of up to `limit` Task structs, starting from `cursor`.
     pub fn list_tasks(e: Env, cursor: u64, limit: u32) -> soroban_sdk::Vec<Task> {
         let count = storage::read_task_count(&e);
         let mut tasks: soroban_sdk::Vec<Task> = soroban_sdk::Vec::new(&e);
@@ -363,6 +616,21 @@ impl RegistryContract {
         tasks
     }
 
+    /// Transfers the admin role to a new address.
+    ///
+    /// # Arguments
+    ///
+    /// * `current_admin` - The current admin address (must authorize)
+    /// * `new_admin` - The new admin address to transfer control to
+    ///
+    /// # Panics
+    ///
+    /// * Panics if `current_admin` is not the stored admin
+    /// * Panics if `new_admin == current_admin`
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the current admin address.
     pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
         let stored_admin = storage::read_admin(&e);
