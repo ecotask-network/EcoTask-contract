@@ -7,6 +7,20 @@ use task_registry::{Task, TaskStatus};
 
 /// Fetches the task from the registry and enforces that it is active and not
 /// expired. Returns the task so the caller can inspect `reward_amount`.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `task_id` - The ID of the task to fetch and validate
+///
+/// # Returns
+///
+/// The Task struct if valid.
+///
+/// # Panics
+///
+/// * Panics if the task is not Active
+/// * Panics if the task has expired
 fn require_active_task(e: &Env, task_id: u64) -> Task {
     let registry_id = storage::read_registry(e);
     let task: Task = e.invoke_contract(
@@ -90,6 +104,14 @@ pub struct OracleRemovedEvent {
 pub struct RewardEngine;
 
 /// Panics if the engine is paused.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+///
+/// # Panics
+///
+/// Panics if the contract is paused.
 fn require_not_paused(e: &Env) {
     if storage::is_paused(e) {
         panic!("engine: contract is paused");
@@ -97,6 +119,15 @@ fn require_not_paused(e: &Env) {
 }
 
 /// Panics unless `addr` is one of the registered oracles.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `addr` - The address to check
+///
+/// # Panics
+///
+/// Panics if the address is not a registered oracle.
 fn require_oracle(e: &Env, addr: &Address) {
     if !storage::is_registered_oracle(e, addr) {
         panic!("engine: unauthorized");
@@ -104,6 +135,15 @@ fn require_oracle(e: &Env, addr: &Address) {
 }
 
 /// Panics unless `addr` is the admin.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `addr` - The address to check
+///
+/// # Panics
+///
+/// Panics if the address is not the admin.
 fn require_admin(e: &Env, addr: &Address) {
     let admin = storage::read_admin(e);
     if addr != &admin {
@@ -113,6 +153,16 @@ fn require_admin(e: &Env, addr: &Address) {
 
 /// Collects up to `limit` pending verifications starting at offset `cursor`
 /// into the full verification log, skipping already-resolved entries.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `cursor` - The starting offset into the verification list
+/// * `limit` - The maximum number of verifications to return
+///
+/// # Returns
+///
+/// A vector of pending verification records.
 fn collect_pending(e: &Env, cursor: u32, limit: u32) -> soroban_sdk::Vec<Verification> {
     let keys = storage::read_verification_keys(e);
     let mut result: soroban_sdk::Vec<Verification> = soroban_sdk::Vec::new(e);
@@ -133,6 +183,23 @@ fn collect_pending(e: &Env, cursor: u32, limit: u32) -> soroban_sdk::Vec<Verific
 
 #[contractimpl]
 impl RewardEngine {
+    /// Initializes the reward engine contract with core addresses.
+    ///
+    /// # Arguments
+    ///
+    /// * `admin` - The initial administrator address
+    /// * `token` - The address of the token contract
+    /// * `registry` - The address of the task registry contract
+    /// * `oracle` - The initial oracle address
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the contract has already been initialized
+    /// * Panics if `admin == oracle` (separation of duties requirement)
+    ///
+    /// # Auth
+    ///
+    /// No authentication required. Can only be called once during deployment.
     pub fn initialize(e: Env, admin: Address, token: Address, registry: Address, oracle: Address) {
         if storage::has_admin(&e) {
             panic!("engine: already initialized");
@@ -146,6 +213,21 @@ impl RewardEngine {
         storage::write_oracles(&e, &vec![&e, oracle]);
     }
 
+    /// Replaces the entire oracle roster with a single oracle.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `new_oracle` - The new oracle address to set
+    ///
+    /// # Panics
+    ///
+    /// * Panics if caller is not the admin
+    /// * Panics if `new_oracle == caller` (oracle must differ from admin)
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn set_oracle(e: Env, caller: Address, new_oracle: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
@@ -157,6 +239,21 @@ impl RewardEngine {
 
     /// Registers an additional oracle. Any registered oracle may submit,
     /// approve, or reject proofs.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `new_oracle` - The new oracle address to add
+    ///
+    /// # Panics
+    ///
+    /// * Panics if caller is not the admin
+    /// * Panics if `new_oracle == admin` (oracle must differ from admin)
+    /// * Panics if `new_oracle` is already registered
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn add_oracle(e: Env, caller: Address, new_oracle: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
@@ -173,6 +270,21 @@ impl RewardEngine {
 
     /// Removes a registered oracle. The last remaining oracle cannot be
     /// removed, so the engine always keeps at least one active oracle.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `oracle` - The oracle address to remove
+    ///
+    /// # Panics
+    ///
+    /// * Panics if caller is not the admin
+    /// * Panics if `oracle` is not registered
+    /// * Panics if `oracle` is the last remaining oracle
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn remove_oracle(e: Env, caller: Address, oracle: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
@@ -187,27 +299,84 @@ impl RewardEngine {
     }
 
     /// Returns the full roster of registered oracles.
+    ///
+    /// # Returns
+    ///
+    /// A vector of all registered oracle addresses.
     pub fn get_oracles(e: Env) -> soroban_sdk::Vec<Address> {
         storage::read_oracles(&e)
     }
 
     /// Returns true if `addr` is a registered oracle.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - The address to check
+    ///
+    /// # Returns
+    ///
+    /// true if the address is a registered oracle, false otherwise.
     pub fn is_oracle(e: Env, addr: Address) -> bool {
         storage::is_registered_oracle(&e, &addr)
     }
 
+    /// Sets the token contract address.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `new_token` - The new token contract address
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn set_token(e: Env, caller: Address, new_token: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
         storage::write_token(&e, &new_token);
     }
 
+    /// Sets the registry contract address.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `new_registry` - The new registry contract address
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn set_registry(e: Env, caller: Address, new_registry: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
         storage::write_registry(&e, &new_registry);
     }
 
+    /// Sets platform-wide reward bounds for all payouts.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `min_reward` - The minimum allowed reward amount (must be positive)
+    /// * `max_reward` - The maximum allowed reward amount (must be >= min_reward)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if caller is not the admin
+    /// * Panics if `min_reward <= 0`
+    /// * Panics if `max_reward < min_reward`
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn set_reward_range(e: Env, caller: Address, min_reward: i128, max_reward: i128) {
         caller.require_auth();
         require_admin(&e, &caller);
@@ -220,22 +389,78 @@ impl RewardEngine {
         storage::write_reward_range(&e, min_reward, max_reward);
     }
 
+    /// Pauses the contract, blocking all proof operations.
+    ///
+    /// This is an emergency function to halt operations in case of an exploit.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn pause(e: Env, caller: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
         storage::set_paused(&e, true);
     }
 
+    /// Resumes contract operations after a pause.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn unpause(e: Env, caller: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
         storage::set_paused(&e, false);
     }
 
+    /// Checks if the contract is currently paused.
+    ///
+    /// # Returns
+    ///
+    /// true if the contract is paused, false otherwise.
     pub fn is_paused(e: Env) -> bool {
         storage::is_paused(&e)
     }
 
+    /// Submits a proof of task completion for verification.
+    ///
+    /// This records a user's proof CID for a specific task. The proof must be
+    /// verified by an oracle before any reward is paid.
+    ///
+    /// # Arguments
+    ///
+    /// * `oracle` - The oracle address submitting the proof (must authorize and be registered)
+    /// * `user` - The user address that completed the task
+    /// * `task_id` - The ID of the task that was completed
+    /// * `proof_cid` - The IPFS CID string of the proof
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the contract is paused
+    /// * Panics if oracle is not authorized
+    /// * Panics if oracle is not a registered oracle
+    /// * Panics if a verification already exists for this (task_id, user) pair
+    /// * Panics if the proof CID has already been submitted
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from a registered oracle address.
     pub fn submit_proof(e: Env, oracle: Address, user: Address, task_id: u64, proof_cid: String) {
         require_not_paused(&e);
         oracle.require_auth();
@@ -281,6 +506,34 @@ impl RewardEngine {
         .publish(&e);
     }
 
+    /// Approves a proof and triggers reward payout.
+    ///
+    /// This validates the proof, marks it as approved, calls the registry to
+    /// record the task completion, and mints the reward tokens to the user.
+    ///
+    /// # Arguments
+    ///
+    /// * `oracle` - The oracle address approving the proof (must authorize and be registered)
+    /// * `user` - The user address that completed the task
+    /// * `task_id` - The ID of the task that was completed
+    /// * `reward_amount` - The amount of ECO tokens to reward (must be positive)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the contract is paused
+    /// * Panics if oracle is not authorized
+    /// * Panics if oracle is not a registered oracle
+    /// * Panics if no verification exists for this (task_id, user) pair
+    /// * Panics if the verification is not in Pending status
+    /// * Panics if `reward_amount <= 0`
+    /// * Panics if `reward_amount` is below the minimum reward bound (if set)
+    /// * Panics if `reward_amount` exceeds the maximum reward bound (if set)
+    /// * Panics if the task is not active or has expired (via require_active_task)
+    /// * Panics if `reward_amount` exceeds the task's declared reward budget
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from a registered oracle address.
     pub fn approve_proof(
         e: Env,
         oracle: Address,
@@ -356,6 +609,28 @@ impl RewardEngine {
         storage::add_total_paid(&e, reward_amount);
     }
 
+    /// Rejects a proof without payout.
+    ///
+    /// This marks a verification as rejected, meaning the user will not receive
+    /// any reward for this proof submission.
+    ///
+    /// # Arguments
+    ///
+    /// * `oracle` - The oracle address rejecting the proof (must authorize and be registered)
+    /// * `user` - The user address that submitted the proof
+    /// * `task_id` - The ID of the task
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the contract is paused
+    /// * Panics if oracle is not authorized
+    /// * Panics if oracle is not a registered oracle
+    /// * Panics if no verification exists for this (task_id, user) pair
+    /// * Panics if the verification is not in Pending status
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from a registered oracle address.
     pub fn reject_proof(e: Env, oracle: Address, user: Address, task_id: u64) {
         require_not_paused(&e);
         oracle.require_auth();
@@ -383,6 +658,26 @@ impl RewardEngine {
         .publish(&e);
     }
 
+    /// Escalates a pending or rejected proof to dispute status.
+    ///
+    /// Disputed proofs require admin resolution before any payout can occur.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `user` - The user address that submitted the proof
+    /// * `task_id` - The ID of the task
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the contract is paused
+    /// * Panics if caller is not the admin
+    /// * Panics if no verification exists for this (task_id, user) pair
+    /// * Panics if the verification is not in Pending or Rejected status
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn dispute_proof(e: Env, caller: Address, user: Address, task_id: u64) {
         require_not_paused(&e);
         caller.require_auth();
@@ -406,6 +701,31 @@ impl RewardEngine {
         DisputeRaisedEvent { user, task_id }.publish(&e);
     }
 
+    /// Resolves a disputed proof, either approving with payout or rejecting.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `user` - The user address that submitted the proof
+    /// * `task_id` - The ID of the task
+    /// * `approve` - true to approve and pay, false to reject
+    /// * `reward_amount` - The reward amount if approving (must be positive)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the contract is paused
+    /// * Panics if caller is not the admin
+    /// * Panics if no verification exists for this (task_id, user) pair
+    /// * Panics if the verification is not in Disputed status
+    /// * Panics if `approve` is true and `reward_amount <= 0`
+    /// * Panics if `approve` is true and `reward_amount` is below the minimum (if set)
+    /// * Panics if `approve` is true and `reward_amount` exceeds the maximum (if set)
+    /// * Panics if `approve` is true and the task is not active or has expired
+    /// * Panics if `approve` is true and `reward_amount` exceeds the task's budget
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn resolve_dispute(
         e: Env,
         caller: Address,
@@ -487,6 +807,20 @@ impl RewardEngine {
         .publish(&e);
     }
 
+    /// Retrieves a verification record for a specific user and task.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The ID of the task
+    /// * `user` - The user address
+    ///
+    /// # Returns
+    ///
+    /// The Verification struct for the requested (task_id, user) pair.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no verification exists for this pair.
     pub fn get_verification(e: Env, task_id: u64, user: Address) -> Verification {
         match storage::read_verification(&e, task_id, &user) {
             Some(v) => v,
@@ -494,6 +828,19 @@ impl RewardEngine {
         }
     }
 
+    /// Retrieves a verification record by its proof CID hash.
+    ///
+    /// # Arguments
+    ///
+    /// * `cid_hash` - The SHA-256 hash of the proof CID
+    ///
+    /// # Returns
+    ///
+    /// The Verification struct for the proof with the given CID hash.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no verification exists for this CID hash.
     pub fn get_verification_by_cid_hash(e: Env, cid_hash: BytesN<32>) -> Verification {
         let key = match storage::read_cid_index(&e, &cid_hash) {
             Some(key) => key,
@@ -508,6 +855,15 @@ impl RewardEngine {
     /// Returns up to `limit` pending verifications starting from `cursor`
     /// (a zero-based offset into the full verification log). Bounded reads
     /// make this safe for off-chain indexers to paginate at scale.
+    ///
+    /// # Arguments
+    ///
+    /// * `cursor` - The starting offset (zero-based)
+    /// * `limit` - The maximum number of verifications to return
+    ///
+    /// # Returns
+    ///
+    /// A vector of pending verification records.
     pub fn get_pending_verifications_paged(
         e: Env,
         cursor: u32,
@@ -516,12 +872,27 @@ impl RewardEngine {
         collect_pending(&e, cursor, limit)
     }
 
+    /// Returns all pending verifications.
+    ///
+    /// # Returns
+    ///
+    /// A vector of all pending verification records.
     pub fn get_pending_verifications(e: Env) -> soroban_sdk::Vec<Verification> {
         collect_pending(&e, 0, u32::MAX)
     }
 
     /// Pageable history of a single user's verifications across all tasks,
     /// ordered by submission.
+    ///
+    /// # Arguments
+    ///
+    /// * `user` - The user address to query
+    /// * `cursor` - The starting offset (zero-based)
+    /// * `limit` - The maximum number of verifications to return
+    ///
+    /// # Returns
+    ///
+    /// A vector of verification records for the specified user.
     pub fn get_verifications_by_user(
         e: Env,
         user: Address,
@@ -540,10 +911,30 @@ impl RewardEngine {
         result
     }
 
+    /// Returns the total amount of ECO tokens paid out by this engine.
+    ///
+    /// # Returns
+    ///
+    /// The cumulative sum of all approved rewards as an i128.
     pub fn total_paid(e: Env) -> i128 {
         storage::read_total_paid(&e)
     }
 
+    /// Transfers the admin role to a new address.
+    ///
+    /// # Arguments
+    ///
+    /// * `current_admin` - The current admin address (must authorize)
+    /// * `new_admin` - The new admin address to transfer control to
+    ///
+    /// # Panics
+    ///
+    /// * Panics if `current_admin` is not the stored admin
+    /// * Panics if `new_admin == current_admin`
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the current admin address.
     pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
         require_admin(&e, &current_admin);
@@ -910,12 +1301,12 @@ mod test {
         let (e, admin, oracle, user, task_id, client) = setup();
         e.mock_all_auths_allowing_non_root_auth();
 
-        // Set allowed range: 500 – 2000
+        // Set allowed range: 500 - 2000
         client.set_reward_range(&admin, &500, &2000);
 
         let proof_cid = String::from_str(&e, "QmRangeOk");
         client.submit_proof(&oracle, &user, &task_id, &proof_cid);
-        // 1000 is within range — should succeed
+        // 1000 is within range - should succeed
         client.approve_proof(&oracle, &user, &task_id, &1000);
 
         let v = client.get_verification(&task_id, &user);
