@@ -199,6 +199,7 @@ impl RegistryContract {
         task_id
     }
 
+
     /// Retrieves a task by its ID.
     ///
     /// # Arguments
@@ -212,12 +213,18 @@ impl RegistryContract {
     /// # Panics
     ///
     /// Panics if no task exists with the given ID.
+
+    // `status` is the last value written to storage: a task past its
+    // `expires_at` still reads `Active` until `expire_task_permissionless` (or admin's
+    // `expire_task`) runs. See `get_task_live_status` for the effective status.
+
     pub fn get_task(e: Env, task_id: u64) -> Task {
         match storage::read_task(&e, task_id) {
             Some(task) => task,
             None => panic!("registry: task not found"),
         }
     }
+
 
     /// Marks a task as completed for a specific user.
     ///
@@ -243,6 +250,24 @@ impl RegistryContract {
     /// # Auth
     ///
     /// Requires authentication from the caller address, which must be a sponsor or admin.
+
+    /// Same as `get_task`, but reports `Expired` once `expires_at` has
+    /// passed even if storage still says `Active`. Read-only — call
+    /// `expire_task_permissionless` to persist the effective status.
+    pub fn get_task_live_status(e: Env, task_id: u64) -> Task {
+        let mut task = match storage::read_task(&e, task_id) {
+            Some(task) => task,
+            None => panic!("registry: task not found"),
+        };
+
+        if task.status == TaskStatus::Active && task.expires_at < e.ledger().timestamp() {
+            task.status = TaskStatus::Expired;
+        }
+
+        task
+    }
+
+
     pub fn complete_task(e: Env, caller: Address, task_id: u64, user: Address) {
         caller.require_auth();
         access::require_sponsor(&e, &caller);
@@ -312,6 +337,28 @@ impl RegistryContract {
 
         task.status = TaskStatus::Expired;
         storage::write_task(&e, &task);
+    }
+
+    /// Permissionless sweep: flips an `Active` task to `Expired` once its
+    /// deadline has passed. No `require_auth`, so any indexer or user can
+    /// keep storage in sync instead of waiting on admin's `expire_task`.
+    pub fn expire_task_permissionless(e: Env, task_id: u64) {
+        let mut task = match storage::read_task(&e, task_id) {
+            Some(task) => task,
+            None => panic!("registry: task not found"),
+        };
+
+        if task.status != TaskStatus::Active {
+            panic!("registry: task is not active");
+        }
+        if task.expires_at >= e.ledger().timestamp() {
+            panic!("registry: task not yet expired");
+        }
+
+        task.status = TaskStatus::Expired;
+        storage::write_task(&e, &task);
+
+        TaskExpiredEvent { task_id }.publish(&e);
     }
 
     /// Extends the expiry of an active task. Callable by the task creator or
@@ -730,6 +777,69 @@ mod test {
 
         let attacker = Address::generate(&e);
         client.expire_task(&attacker, &0);
+    }
+
+    #[test]
+    fn test_permissionless_expire_past_deadline() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        e.ledger().set_timestamp(1000);
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            500,
+        );
+
+        e.ledger().set_timestamp(2000);
+        client.expire_task_permissionless(&task_id);
+
+        let task = client.get_task(&task_id);
+        assert_eq!(task.status, TaskStatus::Expired);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: task not yet expired")]
+    fn test_permissionless_expire_not_yet_expired() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            1000,
+        );
+
+        client.expire_task_permissionless(&task_id);
+    }
+
+    #[test]
+    fn test_get_task_live_status_reflects_expiry() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        e.ledger().set_timestamp(1000);
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            500,
+        );
+
+        e.ledger().set_timestamp(2000);
+
+        // Storage is untouched until expire_task_permissionless runs.
+        let stored = client.get_task(&task_id);
+        assert_eq!(stored.status, TaskStatus::Active);
+
+        // The live-status view reports the effective status instead.
+        let live = client.get_task_live_status(&task_id);
+        assert_eq!(live.status, TaskStatus::Expired);
     }
 
     #[test]
