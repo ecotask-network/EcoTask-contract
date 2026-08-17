@@ -2,7 +2,32 @@
 name: CI
 on: [push, pull_request]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
+  changelog:
+    name: Require changelog for contract changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect contract and changelog changes
+        id: changes
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            contracts:
+              - 'contracts/*/src/*.rs'
+            changelog:
+              - 'CHANGELOG.md'
+      - name: Require changelog entry
+        if: steps.changes.outputs.contracts == 'true' && steps.changes.outputs.changelog != 'true'
+        run: |
+          echo "::error::Contract source changes require a CHANGELOG.md entry."
+          exit 1
+
   lint-and-build:
     runs-on: ubuntu-latest
     timeout-minutes: 15

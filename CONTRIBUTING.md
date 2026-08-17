@@ -10,6 +10,7 @@ First off, thank you for considering contributing to EcoTask! It's people like y
   - [Suggesting Enhancements](#suggesting-enhancements)
   - [Pull Requests](#pull-requests)
 - [Development Workflow](#development-workflow)
+- [Changelog](#changelog)
 - [Style Guide](#style-guide)
 - [Security](#security)
 
@@ -83,6 +84,54 @@ cargo fmt --all -- --check
 # Run clippy
 cargo clippy --all-targets --all-features -- -D warnings
 ```
+
+## Changelog
+
+Every pull request that changes a public contract function, a storage key or
+stored value shape, or an error string must update the `[Unreleased]` section
+of [CHANGELOG.md](./CHANGELOG.md). Contract source changes under
+`contracts/*/src/*.rs` are checked in CI and cannot merge without a changelog
+update.
+
+Use the Keep a Changelog categories `Added`, `Changed`, `Deprecated`,
+`Removed`, `Fixed`, and `Security`. Name the affected contract and describe
+what integrators must do. Do not edit an existing release entry; release
+entries are historical records.
+
+Classify contract changes by their integration impact:
+
+- **API:** Public function additions are backward-compatible. Renaming,
+  removing, or changing the parameters or return type of a public function is
+  breaking and requires callers to update.
+- **Storage:** Adding, removing, renaming, or changing the encoded shape of a
+  storage key is breaking for existing state. State whether the change
+  requires a migration or a fresh deployment.
+- **Behaviour:** A semantic change that keeps the same function signature and
+  storage layout must explain the old and new behaviour, including any changed
+  error string.
+
+Examples:
+
+```markdown
+### Added
+
+- API: `task-registry` adds `get_task_status(task_id) -> TaskStatus`.
+
+### Changed
+
+- Storage: `reward-engine` replaces `DataKey::VerificationList` with a paged
+  index. Existing state requires migration or a fresh deployment.
+- Behaviour: `eco-token::allowance` now removes expired allowance entries
+  while continuing to return `0`.
+```
+
+Workspace and contract package versions follow Semantic Versioning for source
+releases. Before `1.0.0`, increment the minor version for breaking API or
+storage changes and the patch version for backward-compatible fixes. Starting
+with `1.0.0`, increment the major version for breaking changes. A source
+version does not upgrade a deployed Soroban contract: incompatible API or
+storage changes always require a new deployment and contract address unless a
+specific migration path is provided.
 
 ## Style Guide
 
