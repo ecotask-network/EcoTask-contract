@@ -16,7 +16,10 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo build --target wasm32v1-none --release --locked
-      - run: cargo doc --workspace --no-deps -- -D warnings
+      - name: Check documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
 
   unit-tests:
     runs-on: ubuntu-latest

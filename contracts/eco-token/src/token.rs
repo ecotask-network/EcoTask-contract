@@ -515,6 +515,36 @@ impl TokenContract {
         }
     }
 
+    /// Returns an allowance together with its expiration ledger.
+    ///
+    /// # Arguments
+    ///
+    /// * `owner` - The address that granted the allowance
+    /// * `spender` - The address that was granted the allowance
+    ///
+    /// # Returns
+    ///
+    /// Returns `None` when no allowance exists for the `(owner, spender)` pair.
+    /// Otherwise, returns `Some((amount, expiration_ledger))`. The amount is zero
+    /// when the allowance has expired, allowing callers to distinguish an expired
+    /// approval from one that was never created.
+    ///
+    /// # Auth
+    ///
+    /// No authentication is required.
+    pub fn allowance_with_expiry(e: Env, owner: Address, spender: Address) -> Option<(i128, u32)> {
+        let current_sequence = e.ledger().sequence();
+        match storage::read_allowance(&e, &owner, &spender) {
+            Some(a) => {
+                if a.expiration_ledger < current_sequence {
+                    Some((0, a.expiration_ledger))
+                } else {
+                    Some((a.amount, a.expiration_ledger))
+                }
+            }
+            None => None,
+        }
+    }
 
     /// Transfers tokens from one address to another using an approved allowance.
     ///
@@ -535,27 +565,6 @@ impl TokenContract {
     /// # Auth
     ///
     /// Requires authentication from the spender address.
-
-    /// Returns `None` when no allowance exists for the (owner, spender) pair.
-    /// Otherwise returns `Some((amount, expiration_ledger))`, where `amount` is
-    /// `0` for an allowance that has already expired (so the caller can
-    /// distinguish "never approved" from "approval expired") and the live
-    /// remaining `amount` for an allowance that is still valid.
-    pub fn allowance_with_expiry(e: Env, owner: Address, spender: Address) -> Option<(i128, u32)> {
-        let current_sequence = e.ledger().sequence();
-        match storage::read_allowance(&e, &owner, &spender) {
-            Some(a) => {
-                if a.expiration_ledger < current_sequence {
-                    Some((0, a.expiration_ledger))
-                } else {
-                    Some((a.amount, a.expiration_ledger))
-                }
-            }
-            None => None,
-        }
-    }
-
-
     pub fn transfer_from(e: Env, spender: Address, from: Address, to: Address, amount: i128) {
         spender.require_auth();
 

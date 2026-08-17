@@ -1,6 +1,6 @@
 use soroban_sdk::{contracttype, Address, BytesN, Env, String, Vec};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 #[contracttype]
 pub enum TaskStatus {
     Active,

@@ -259,6 +259,17 @@ pub fn read_allowance(e: &Env, owner: &Address, spender: &Address) -> Option<All
     e.storage().persistent().get(&key)
 }
 
+/// Removes an allowance from persistent storage.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `owner` - The address that granted the allowance
+/// * `spender` - The address that was granted the allowance
+pub fn remove_allowance(e: &Env, owner: &Address, spender: &Address) {
+    let key = (symbol_short!("allow"), owner.clone(), spender.clone());
+    e.storage().persistent().remove(&key);
+}
 
 /// Spends (reduces) an allowance by a specified amount.
 ///
@@ -271,14 +282,7 @@ pub fn read_allowance(e: &Env, owner: &Address, spender: &Address) -> Option<All
 ///
 /// # Panics
 ///
-/// Panics if the allowance would underflow.
-
-pub fn remove_allowance(e: &Env, owner: &Address, spender: &Address) {
-    let key = (symbol_short!("allow"), owner.clone(), spender.clone());
-    e.storage().persistent().remove(&key);
-}
-
-
+/// Panics if the allowance does not exist or would underflow.
 pub fn spend_allowance(e: &Env, owner: &Address, spender: &Address, amount: i128) {
     let key = (symbol_short!("allow"), owner.clone(), spender.clone());
     let mut allowance: Allowance = e.storage().persistent().get(&key).unwrap();
