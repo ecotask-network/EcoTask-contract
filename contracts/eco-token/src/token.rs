@@ -502,6 +502,10 @@ impl TokenContract {
         match storage::read_allowance(&e, &owner, &spender) {
             Some(a) => {
                 if a.expiration_ledger < e.ledger().sequence() {
+                    // Lazy cleanup: drop the expired allowance key from storage to
+                    // reclaim ledger rent. The return value stays 0 per SEP-0041,
+                    // so callers that only care about the amount are unaffected.
+                    storage::remove_allowance(&e, &owner, &spender);
                     0
                 } else {
                     a.amount
@@ -510,6 +514,7 @@ impl TokenContract {
             None => 0,
         }
     }
+
 
     /// Transfers tokens from one address to another using an approved allowance.
     ///
@@ -530,6 +535,27 @@ impl TokenContract {
     /// # Auth
     ///
     /// Requires authentication from the spender address.
+
+    /// Returns `None` when no allowance exists for the (owner, spender) pair.
+    /// Otherwise returns `Some((amount, expiration_ledger))`, where `amount` is
+    /// `0` for an allowance that has already expired (so the caller can
+    /// distinguish "never approved" from "approval expired") and the live
+    /// remaining `amount` for an allowance that is still valid.
+    pub fn allowance_with_expiry(e: Env, owner: Address, spender: Address) -> Option<(i128, u32)> {
+        let current_sequence = e.ledger().sequence();
+        match storage::read_allowance(&e, &owner, &spender) {
+            Some(a) => {
+                if a.expiration_ledger < current_sequence {
+                    Some((0, a.expiration_ledger))
+                } else {
+                    Some((a.amount, a.expiration_ledger))
+                }
+            }
+            None => None,
+        }
+    }
+
+
     pub fn transfer_from(e: Env, spender: Address, from: Address, to: Address, amount: i128) {
         spender.require_auth();
 
@@ -1066,6 +1092,124 @@ mod test {
         );
 
         assert_eq!(client.allowance(&owner, &spender), 0);
+    }
+
+    #[test]
+    fn test_allowance_with_expiry_live() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let owner = Address::generate(&e);
+        let spender = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        let expiration_ledger = e.ledger().sequence() + 100;
+        client.approve(&owner, &spender, &500, &expiration_ledger);
+
+        // Live allowance: both allowance and allowance_with_expiry reflect the
+        // live amount.
+        assert_eq!(client.allowance(&owner, &spender), 500);
+        assert_eq!(
+            client.allowance_with_expiry(&owner, &spender),
+            Some((500, expiration_ledger))
+        );
+    }
+
+    #[test]
+    fn test_allowance_with_expiry_expired() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let owner = Address::generate(&e);
+        let spender = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        let expiration_ledger = e.ledger().sequence() + 50;
+        client.approve(&owner, &spender, &500, &expiration_ledger);
+
+        // Advance past the expiration ledger so the allowance is expired.
+        e.ledger().set_sequence_number(expiration_ledger + 1);
+
+        // allowance_with_expiry exposes the fact that an allowance WAS set and
+        // is now expired (note: this must be read before allowance(), because
+        // allowance() lazily cleans up the expired storage key).
+        assert_eq!(
+            client.allowance_with_expiry(&owner, &spender),
+            Some((0, expiration_ledger))
+        );
+        // allowance() must still return 0.
+        assert_eq!(client.allowance(&owner, &spender), 0);
+    }
+
+    #[test]
+    fn test_allowance_with_expiry_none() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let owner = Address::generate(&e);
+        let spender = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        // No allowance ever set: allowance is 0 and allowance_with_expiry is
+        // None, distinguishing "never approved" from "expired".
+        assert_eq!(client.allowance(&owner, &spender), 0);
+        assert_eq!(client.allowance_with_expiry(&owner, &spender), None);
+    }
+
+    #[test]
+    fn test_allowance_lazy_cleanup_of_expired() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let owner = Address::generate(&e);
+        let spender = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        let expiration_ledger = e.ledger().sequence() + 50;
+        client.approve(&owner, &spender, &500, &expiration_ledger);
+        e.ledger().set_sequence_number(expiration_ledger + 1);
+
+        // Before cleanup, allowance_with_expiry still sees the expired entry.
+        assert_eq!(
+            client.allowance_with_expiry(&owner, &spender),
+            Some((0, expiration_ledger))
+        );
+
+        // Calling allowance() on the expired entry lazily removes the storage
+        // key, so the expired allowance is now indistinguishable from "none".
+        assert_eq!(client.allowance(&owner, &spender), 0);
+        assert_eq!(client.allowance_with_expiry(&owner, &spender), None);
     }
 
     #[test]

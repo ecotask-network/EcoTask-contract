@@ -259,6 +259,7 @@ pub fn read_allowance(e: &Env, owner: &Address, spender: &Address) -> Option<All
     e.storage().persistent().get(&key)
 }
 
+
 /// Spends (reduces) an allowance by a specified amount.
 ///
 /// # Arguments
@@ -271,6 +272,13 @@ pub fn read_allowance(e: &Env, owner: &Address, spender: &Address) -> Option<All
 /// # Panics
 ///
 /// Panics if the allowance would underflow.
+
+pub fn remove_allowance(e: &Env, owner: &Address, spender: &Address) {
+    let key = (symbol_short!("allow"), owner.clone(), spender.clone());
+    e.storage().persistent().remove(&key);
+}
+
+
 pub fn spend_allowance(e: &Env, owner: &Address, spender: &Address, amount: i128) {
     let key = (symbol_short!("allow"), owner.clone(), spender.clone());
     let mut allowance: Allowance = e.storage().persistent().get(&key).unwrap();
