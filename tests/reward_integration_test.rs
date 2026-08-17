@@ -1,4 +1,5 @@
 use soroban_sdk::testutils::Address as _;
+use soroban_sdk::testutils::budget as _;
 use soroban_sdk::testutils::BytesN;
 use soroban_sdk::{Address, Env, String};
 
@@ -449,4 +450,214 @@ fn test_oracle_approval_fails_for_desponsored_creator() {
     reg_client.remove_sponsor(&admin, &sponsor);
 
     engine_client.approve_proof(&oracle, &user, &task_id, &500);
+}
+
+// ---------------------------------------------------------------------------
+// Budget / footprint benchmarks
+//
+// Stellar Soroban per-transaction network limits (Protocol 22 mainnet):
+//   CPU instructions : 100,000,000
+//   Memory bytes     :  40,971,520  (~40 MB)
+//
+// These tests assert that the compound operations stay below 50% of each
+// limit — a conservative buffer that leaves room for SDK overhead growth
+// and future contract additions.
+//
+// Run with:  make bench
+// ---------------------------------------------------------------------------
+
+/// The Stellar Soroban mainnet CPU-instruction limit per transaction
+/// (Protocol 22, https://developers.stellar.org/docs/networks/resource-limits-fees).
+const MAINNET_CPU_LIMIT: u64 = 100_000_000;
+
+/// The Stellar Soroban mainnet memory-bytes limit per transaction.
+const MAINNET_MEM_LIMIT: u64 = 40_971_520;
+
+/// Conservative threshold: 50% of each network limit.
+const CPU_THRESHOLD: u64 = MAINNET_CPU_LIMIT / 2; // 50_000_000
+const MEM_THRESHOLD: u64 = MAINNET_MEM_LIMIT / 2; //  20_485_760
+
+/// Helper: deploy all three contracts and wire them together.
+/// Returns (engine_client, reg_client, task_id).
+fn setup_benchmark_env(
+    e: &Env,
+    admin: &Address,
+    oracle: &Address,
+    reward_budget: i128,
+    task_type: &str,
+) -> (
+    reward_engine::RewardEngineClient<'static>,
+    task_registry::RegistryContractClient<'static>,
+    u64,
+) {
+    let token_id = deploy_token(e, admin);
+    let reg_id = deploy_registry(e, admin);
+    let engine_id = deploy_engine(e, admin, &token_id, &reg_id, oracle);
+
+    // Point the token minter at the engine so mint() auth is satisfied
+    // when the engine makes its cross-contract call during approve_proof.
+    let token_client = eco_token::TokenContractClient::new(e, &token_id);
+    token_client.set_minter(admin, &engine_id);
+
+    let engine_client = reward_engine::RewardEngineClient::new(e, &engine_id);
+    let reg_client = task_registry::RegistryContractClient::new(e, &reg_id);
+
+    let loc_hash = soroban_sdk::BytesN::<32>::random(e);
+    let task_id = reg_client.create_task(
+        admin,
+        &String::from_str(e, task_type),
+        &loc_hash,
+        &reward_budget,
+        &1,
+        &(e.ledger().timestamp() + 10_000),
+    );
+
+    (engine_client, reg_client, task_id)
+}
+
+/// Measures CPU instructions and memory bytes consumed by
+/// `submit_proof` + `approve_proof` (the hot path) and asserts
+/// both are below 50% of the Stellar mainnet per-transaction limits.
+///
+/// Run with: `make bench`
+#[test]
+fn test_approve_proof_budget() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let (engine_client, _reg_client, task_id) =
+        setup_benchmark_env(&e, &admin, &oracle, 500, "tree-planting");
+
+    // Reset the budget counter here so only the two measured calls are
+    // accounted for; setup overhead (deploys, creates) is excluded.
+    e.cost_estimate().budget().reset_default();
+
+    let proof = String::from_str(&e, "QmBudgetApproveProof");
+    engine_client.submit_proof(&oracle, &user, &task_id, &proof);
+    engine_client.approve_proof(&oracle, &user, &task_id, &500);
+
+    let cpu = e.cost_estimate().budget().cpu_instruction_cost();
+    let mem = e.cost_estimate().budget().memory_bytes_cost();
+
+    println!(
+        "\n[test_approve_proof_budget]"
+    );
+    println!(
+        "  submit_proof + approve_proof"
+    );
+    println!(
+        "  CPU instructions : {:>12} / {:>12}  ({:.1}% of 50% threshold, {:.1}% of mainnet limit)",
+        cpu,
+        CPU_THRESHOLD,
+        cpu as f64 / CPU_THRESHOLD as f64 * 100.0,
+        cpu as f64 / MAINNET_CPU_LIMIT as f64 * 100.0,
+    );
+    println!(
+        "  Memory bytes     : {:>12} / {:>12}  ({:.1}% of 50% threshold, {:.1}% of mainnet limit)",
+        mem,
+        MEM_THRESHOLD,
+        mem as f64 / MEM_THRESHOLD as f64 * 100.0,
+        mem as f64 / MAINNET_MEM_LIMIT as f64 * 100.0,
+    );
+
+    assert!(
+        cpu < CPU_THRESHOLD,
+        "submit_proof + approve_proof used {} CPU instructions — \
+         exceeds the 50% safety threshold ({}).\n\
+         Stellar mainnet limit: {}. \
+         File a follow-up optimisation issue.",
+        cpu,
+        CPU_THRESHOLD,
+        MAINNET_CPU_LIMIT,
+    );
+    assert!(
+        mem < MEM_THRESHOLD,
+        "submit_proof + approve_proof used {} memory bytes — \
+         exceeds the 50% safety threshold ({}).\n\
+         Stellar mainnet limit: {}. \
+         File a follow-up optimisation issue.",
+        mem,
+        MEM_THRESHOLD,
+        MAINNET_MEM_LIMIT,
+    );
+}
+
+/// Measures CPU instructions and memory bytes consumed by the full
+/// dispute path: `submit_proof` → `reject_proof` → `dispute_proof`
+/// → `resolve_dispute` (approve) and asserts both stay below 50% of
+/// the Stellar mainnet per-transaction limits.
+///
+/// Run with: `make bench`
+#[test]
+fn test_dispute_resolve_budget() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let (engine_client, _reg_client, task_id) =
+        setup_benchmark_env(&e, &admin, &oracle, 750, "coastline-cleanup");
+
+    // Submit and reject without measuring — these are preconditions for
+    // the disputed state, not the operation being benchmarked.
+    let proof = String::from_str(&e, "QmBudgetDisputeProof");
+    engine_client.submit_proof(&oracle, &user, &task_id, &proof);
+    engine_client.reject_proof(&oracle, &user, &task_id);
+
+    // Reset the budget counter: measure only the dispute + resolve path.
+    e.cost_estimate().budget().reset_default();
+
+    engine_client.dispute_proof(&admin, &user, &task_id);
+    engine_client.resolve_dispute(&admin, &user, &task_id, &true, &750);
+
+    let cpu = e.cost_estimate().budget().cpu_instruction_cost();
+    let mem = e.cost_estimate().budget().memory_bytes_cost();
+
+    println!(
+        "\n[test_dispute_resolve_budget]"
+    );
+    println!(
+        "  dispute_proof + resolve_dispute (approve path)"
+    );
+    println!(
+        "  CPU instructions : {:>12} / {:>12}  ({:.1}% of 50% threshold, {:.1}% of mainnet limit)",
+        cpu,
+        CPU_THRESHOLD,
+        cpu as f64 / CPU_THRESHOLD as f64 * 100.0,
+        cpu as f64 / MAINNET_CPU_LIMIT as f64 * 100.0,
+    );
+    println!(
+        "  Memory bytes     : {:>12} / {:>12}  ({:.1}% of 50% threshold, {:.1}% of mainnet limit)",
+        mem,
+        MEM_THRESHOLD,
+        mem as f64 / MEM_THRESHOLD as f64 * 100.0,
+        mem as f64 / MAINNET_MEM_LIMIT as f64 * 100.0,
+    );
+
+    assert!(
+        cpu < CPU_THRESHOLD,
+        "dispute_proof + resolve_dispute used {} CPU instructions — \
+         exceeds the 50% safety threshold ({}).\n\
+         Stellar mainnet limit: {}. \
+         File a follow-up optimisation issue.",
+        cpu,
+        CPU_THRESHOLD,
+        MAINNET_CPU_LIMIT,
+    );
+    assert!(
+        mem < MEM_THRESHOLD,
+        "dispute_proof + resolve_dispute used {} memory bytes — \
+         exceeds the 50% safety threshold ({}).\n\
+         Stellar mainnet limit: {}. \
+         File a follow-up optimisation issue.",
+        mem,
+        MEM_THRESHOLD,
+        MAINNET_MEM_LIMIT,
+    );
 }
