@@ -199,8 +199,11 @@ impl RegistryContract {
         task_id
     }
 
-
     /// Retrieves a task by its ID.
+    ///
+    /// The returned status is the last value written to storage. An active task whose
+    /// deadline has passed still reads as active until an expiry function persists the
+    /// change. Use `get_task_live_status` to obtain its effective status.
     ///
     /// # Arguments
     ///
@@ -208,16 +211,15 @@ impl RegistryContract {
     ///
     /// # Returns
     ///
-    /// The Task struct for the requested task.
+    /// The task with its stored status.
     ///
     /// # Panics
     ///
     /// Panics if no task exists with the given ID.
-
-    // `status` is the last value written to storage: a task past its
-    // `expires_at` still reads `Active` until `expire_task_permissionless` (or admin's
-    // `expire_task`) runs. See `get_task_live_status` for the effective status.
-
+    ///
+    /// # Auth
+    ///
+    /// No authentication is required.
     pub fn get_task(e: Env, task_id: u64) -> Task {
         match storage::read_task(&e, task_id) {
             Some(task) => task,
@@ -225,6 +227,39 @@ impl RegistryContract {
         }
     }
 
+    /// Retrieves a task with its effective status at the current ledger timestamp.
+    ///
+    /// Unlike `get_task`, this reports an active task as expired after its deadline,
+    /// even if the stored status has not been updated. This function is read-only; use
+    /// `expire_task_permissionless` to persist the expired status.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The ID of the task to retrieve
+    ///
+    /// # Returns
+    ///
+    /// The task with its effective status.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no task exists with the given ID.
+    ///
+    /// # Auth
+    ///
+    /// No authentication is required.
+    pub fn get_task_live_status(e: Env, task_id: u64) -> Task {
+        let mut task = match storage::read_task(&e, task_id) {
+            Some(task) => task,
+            None => panic!("registry: task not found"),
+        };
+
+        if task.status == TaskStatus::Active && task.expires_at < e.ledger().timestamp() {
+            task.status = TaskStatus::Expired;
+        }
+
+        task
+    }
 
     /// Marks a task as completed for a specific user.
     ///
@@ -250,24 +285,6 @@ impl RegistryContract {
     /// # Auth
     ///
     /// Requires authentication from the caller address, which must be a sponsor or admin.
-
-    /// Same as `get_task`, but reports `Expired` once `expires_at` has
-    /// passed even if storage still says `Active`. Read-only — call
-    /// `expire_task_permissionless` to persist the effective status.
-    pub fn get_task_live_status(e: Env, task_id: u64) -> Task {
-        let mut task = match storage::read_task(&e, task_id) {
-            Some(task) => task,
-            None => panic!("registry: task not found"),
-        };
-
-        if task.status == TaskStatus::Active && task.expires_at < e.ledger().timestamp() {
-            task.status = TaskStatus::Expired;
-        }
-
-        task
-    }
-
-
     pub fn complete_task(e: Env, caller: Address, task_id: u64, user: Address) {
         caller.require_auth();
         access::require_sponsor(&e, &caller);
@@ -339,9 +356,24 @@ impl RegistryContract {
         storage::write_task(&e, &task);
     }
 
-    /// Permissionless sweep: flips an `Active` task to `Expired` once its
-    /// deadline has passed. No `require_auth`, so any indexer or user can
-    /// keep storage in sync instead of waiting on admin's `expire_task`.
+    /// Persists an active task as expired after its deadline has passed.
+    ///
+    /// This permissionless operation allows any indexer or user to synchronize the
+    /// stored status without waiting for the administrator to call `expire_task`.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The ID of the task to expire
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if the task is not Active
+    /// * Panics if the task's deadline has not passed
+    ///
+    /// # Auth
+    ///
+    /// No authentication is required.
     pub fn expire_task_permissionless(e: Env, task_id: u64) {
         let mut task = match storage::read_task(&e, task_id) {
             Some(task) => task,
