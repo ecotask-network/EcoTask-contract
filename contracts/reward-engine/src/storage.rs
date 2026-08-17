@@ -434,6 +434,61 @@ pub fn read_total_paid(e: &Env) -> i128 {
     e.storage().instance().get(&key).unwrap_or(0)
 }
 
+/// Sets the minimum number of ledgers a user must wait between two reward
+/// approvals.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `ledgers` - The cooldown length in ledgers; 0 disables the cooldown.
+pub fn write_user_cooldown(e: &Env, ledgers: u64) {
+    e.storage().instance().set(&DataKey::UserCooldown, &ledgers);
+}
+
+/// Reads the configured per-user reward cooldown.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+///
+/// # Returns
+///
+/// The cooldown in ledgers, or 0 (disabled) if never configured.
+pub fn read_user_cooldown(e: &Env) -> u64 {
+    e.storage()
+        .instance()
+        .get(&DataKey::UserCooldown)
+        .unwrap_or(0)
+}
+
+/// Records the ledger at which a user most recently received a reward.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `user` - The user address being rewarded
+/// * `ledger` - The current ledger sequence number
+pub fn write_last_reward_ledger(e: &Env, user: &Address, ledger: u64) {
+    let key = DataKey::LastRewardLedger(user.clone());
+    e.storage().persistent().set(&key, &ledger);
+}
+
+/// Reads the ledger at which a user most recently received a reward.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `user` - The user address to query
+///
+/// # Returns
+///
+/// `None` if the user has never been rewarded, distinguishing that case
+/// from a legitimate ledger value of 0.
+pub fn read_last_reward_ledger(e: &Env, user: &Address) -> Option<u64> {
+    let key = DataKey::LastRewardLedger(user.clone());
+    e.storage().persistent().get(&key)
+}
+
 /// Sets the paused state of the contract.
 ///
 /// # Arguments

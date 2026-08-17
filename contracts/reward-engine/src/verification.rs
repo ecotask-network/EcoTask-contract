@@ -421,6 +421,18 @@ impl RewardEngine {
     ///
     /// # Panics
     ///
+    ///     /// Sets the minimum number of ledgers a user must wait between reward
+    /// approvals. 0 disables the cooldown.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
+    pub fn set_user_cooldown(e: Env, caller: Address, min_ledgers_between_rewards: u64) {
+        caller.require_auth();
+        require_admin(&e, &caller);
+        storage::write_user_cooldown(&e, min_ledgers_between_rewards);
+    }
+
     /// Panics if caller is not the admin.
     ///
     /// # Auth
