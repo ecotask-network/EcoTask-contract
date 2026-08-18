@@ -74,6 +74,18 @@ pub fn has_admin(e: &Env) -> bool {
     e.storage().instance().has(&symbol_short!("admin"))
 }
 
+pub fn write_pending_admin(e: &Env, admin: &Address) {
+    e.storage().instance().set(&symbol_short!("pending"), admin);
+}
+
+pub fn read_pending_admin(e: &Env) -> Option<Address> {
+    e.storage().instance().get(&symbol_short!("pending"))
+}
+
+pub fn remove_pending_admin(e: &Env) {
+    e.storage().instance().remove(&symbol_short!("pending"));
+}
+
 /// Writes the minter address to instance storage.
 ///
 /// # Arguments

@@ -55,6 +55,22 @@ pub struct SponsorRemovedEvent {
     pub sponsor: Address,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposedEvent {
+    #[topic]
+    pub current_admin: Address,
+    #[topic]
+    pub proposed_admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAcceptedEvent {
+    #[topic]
+    pub new_admin: Address,
+}
+
 #[contract]
 pub struct RegistryContract;
 
@@ -653,7 +669,7 @@ impl RegistryContract {
     /// # Auth
     ///
     /// Requires authentication from the current admin address.
-    pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+    pub fn propose_admin(e: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
         let stored_admin = storage::read_admin(&e);
         if current_admin != stored_admin {
@@ -662,7 +678,33 @@ impl RegistryContract {
         if new_admin == current_admin {
             panic!("registry: new admin must be different");
         }
-        storage::write_admin(&e, &new_admin);
+        storage::write_pending_admin(&e, &new_admin);
+        AdminProposedEvent {
+            current_admin,
+            proposed_admin: new_admin,
+        }
+        .publish(&e);
+    }
+
+    pub fn accept_admin(e: Env, pending_admin: Address) {
+        pending_admin.require_auth();
+        let proposed =
+            storage::read_pending_admin(&e).unwrap_or_else(|| panic!("registry: no pending admin"));
+        if pending_admin != proposed {
+            panic!("registry: unauthorized pending admin");
+        }
+        storage::write_admin(&e, &pending_admin);
+        storage::remove_pending_admin(&e);
+        AdminAcceptedEvent {
+            new_admin: pending_admin,
+        }
+        .publish(&e);
+    }
+
+    // DEPRECATED: use propose_admin. This alias preserves the existing ABI while
+    // requiring the proposed admin to accept before gaining control.
+    pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+        Self::propose_admin(e, current_admin, new_admin);
     }
 }
 
@@ -1395,6 +1437,8 @@ mod test {
 
         let new_admin = Address::generate(&e);
         client.transfer_admin(&admin, &new_admin);
+        assert_eq!(client.admin(), admin);
+        client.accept_admin(&new_admin);
 
         let loc_hash: BytesN<32> = BytesN::random(&e);
         let task_id = client.create_task(
@@ -1408,6 +1452,35 @@ mod test {
 
         let task = client.get_task(&task_id);
         assert_eq!(task.creator, new_admin);
+    }
+
+    #[test]
+    fn test_propose_admin_overwrite() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+        let first = Address::generate(&e);
+        let second = Address::generate(&e);
+        client.propose_admin(&admin, &first);
+        client.propose_admin(&admin, &second);
+        client.accept_admin(&second);
+        assert_eq!(client.admin(), second);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: unauthorized pending admin")]
+    fn test_accept_admin_wrong_address() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+        client.propose_admin(&admin, &Address::generate(&e));
+        client.accept_admin(&Address::generate(&e));
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: no pending admin")]
+    fn test_accept_admin_without_proposal() {
+        let (e, _admin, client) = setup();
+        e.mock_all_auths();
+        client.accept_admin(&Address::generate(&e));
     }
 
     #[test]
