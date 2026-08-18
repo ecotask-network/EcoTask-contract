@@ -49,7 +49,7 @@
                   "string": "tree-planting"
                 },
                 {
-                  "bytes": "190154e887240bb5b32fd23e278aec134f927994d5fd958b6dc87ff6876aa442"
+                  "bytes": "a8bf37d17259c92f874b7617a9fb20ef92da2c16ce1fb2bbc8b8645e64d40cea"
                 },
                 {
                   "i128": "1000"
@@ -201,7 +201,37 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "CreatorTasks"
+                    "symbol": "CreatorTask"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                  },
+                  {
+                    "u64": "0"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "0"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAK3IM",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "CreatorTaskCount"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -210,11 +240,7 @@
               },
               "durability": "persistent",
               "val": {
-                "vec": [
-                  {
-                    "u64": "0"
-                  }
-                ]
+                "u64": "1"
               }
             }
           },
@@ -314,7 +340,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "190154e887240bb5b32fd23e278aec134f927994d5fd958b6dc87ff6876aa442"
+                      "bytes": "a8bf37d17259c92f874b7617a9fb20ef92da2c16ce1fb2bbc8b8645e64d40cea"
                     }
                   },
                   {
@@ -440,12 +466,16 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "Oracle"
+                            "symbol": "Oracles"
                           }
                         ]
                       },
                       "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                        "vec": [
+                          {
+                            "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                          }
+                        ]
                       }
                     },
                     {

@@ -32,7 +32,16 @@ pub enum DataKey {
     Admin,
     Sponsor(Address),
     Completion(u64, Address),
+    /// Deprecated: old unbounded Vec layout (no longer written; retained in enum
+    /// solely to prevent storage-key collisions with any existing deployed data).
+    /// New code uses `CreatorTaskCount` + `CreatorTask` instead.
     CreatorTasks(Address),
+    /// Number of tasks recorded for a given creator address. Used together with
+    /// `CreatorTask(Address, index)` to implement O(1) per-task writes.
+    CreatorTaskCount(Address),
+    /// The task id stored at position `index` (0-based) in a creator's task list.
+    /// Index is in range `0 .. CreatorTaskCount(creator)`.
+    CreatorTask(Address, u64),
 }
 
 /// Writes a task to persistent storage.
@@ -192,31 +201,84 @@ pub fn is_completed(e: &Env, task_id: u64, user: &Address) -> bool {
     e.storage().persistent().get(&key).unwrap_or(false)
 }
 
-/// Adds a task ID to a creator's list of created tasks.
+/// Returns the number of tasks created by `creator`.
+///
+/// This is O(1): it reads one storage entry regardless of how many tasks the
+/// creator has accumulated.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `creator` - The address whose task count is requested
+///
+/// # Returns
+///
+/// The number of tasks registered for this creator (0 if none).
+pub fn read_creator_task_count(e: &Env, creator: &Address) -> u64 {
+    let key = DataKey::CreatorTaskCount(creator.clone());
+    e.storage().persistent().get(&key).unwrap_or(0)
+}
+
+/// Appends `task_id` to `creator`'s indexed task list in O(1) storage work.
+///
+/// The new entry is written at index `CreatorTaskCount(creator)` and the counter
+/// is then incremented by one. The total work is exactly:
+///   1 persistent read  (CreatorTaskCount)
+///   1 persistent write (CreatorTask(creator, index))
+///   1 persistent write (CreatorTaskCount)
+///
+/// This is independent of how many tasks the creator already has, which fixes
+/// the unbounded read-modify-write that previously affected the old
+/// `CreatorTasks(creator) -> Vec<u64>` layout.
 ///
 /// # Arguments
 ///
 /// * `e` - The Soroban environment
 /// * `creator` - The address of the task creator
-/// * `task_id` - The ID of the task to add to the creator's list
+/// * `task_id` - The ID of the task to append
 pub fn push_creator_task(e: &Env, creator: &Address, task_id: u64) {
-    let key = DataKey::CreatorTasks(creator.clone());
-    let mut ids: Vec<u64> = e.storage().persistent().get(&key).unwrap_or(Vec::new(e));
-    ids.push_back(task_id);
-    e.storage().persistent().set(&key, &ids);
+    let count_key = DataKey::CreatorTaskCount(creator.clone());
+    let index: u64 = e.storage().persistent().get(&count_key).unwrap_or(0);
+
+    let entry_key = DataKey::CreatorTask(creator.clone(), index);
+    e.storage().persistent().set(&entry_key, &task_id);
+
+    e.storage().persistent().set(&count_key, &(index + 1));
 }
 
-/// Reads all task IDs created by a specific creator.
+/// Reads up to `limit` task IDs for `creator` starting at `offset` (0-based).
+///
+/// Only the storage entries needed for the requested page are read; the entire
+/// creator history is never deserialized. Reading stops when the end of the
+/// list is reached even if `limit` has not been met.
 ///
 /// # Arguments
 ///
 /// * `e` - The Soroban environment
 /// * `creator` - The address of the creator to query
+/// * `offset` - Zero-based starting position in the creator's task list
+/// * `limit` - Maximum number of entries to return
 ///
 /// # Returns
 ///
-/// A vector of task IDs created by the creator, or an empty vector if none exist.
-pub fn read_creator_tasks(e: &Env, creator: &Address) -> Vec<u64> {
-    let key = DataKey::CreatorTasks(creator.clone());
-    e.storage().persistent().get(&key).unwrap_or(Vec::new(e))
+/// A `Vec<u64>` of up to `limit` task IDs.
+pub fn read_creator_tasks_paged(e: &Env, creator: &Address, offset: u64, limit: u64) -> Vec<u64> {
+    let count = read_creator_task_count(e, creator);
+    let mut result: Vec<u64> = Vec::new(e);
+
+    if offset >= count || limit == 0 {
+        return result;
+    }
+
+    let end = (offset + limit).min(count);
+    let mut index = offset;
+    while index < end {
+        let entry_key = DataKey::CreatorTask(creator.clone(), index);
+        if let Some(task_id) = e.storage().persistent().get::<DataKey, u64>(&entry_key) {
+            result.push_back(task_id);
+        }
+        index += 1;
+    }
+
+    result
 }

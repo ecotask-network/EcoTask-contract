@@ -11,6 +11,29 @@ package version is bumped.
 
 ## [Unreleased]
 
+### Fixed
+
+#### `task-registry`
+
+- **[#52] Unbounded `CreatorTasks` Vec replaced with indexed persistent
+  storage.** Each `create_task` call previously read and rewrote an
+  ever-growing `Vec<u64>` under `DataKey::CreatorTasks(creator)`. Prolific
+  sponsors could drive storage and compute costs up without bound, and the
+  serialized Vec would eventually exhaust transaction limits. The storage
+  layout is now:
+
+  | Key | Value | Purpose |
+  |-----|-------|---------|
+  | `DataKey::CreatorTaskCount(Address)` | `u64` | number of tasks for that creator |
+  | `DataKey::CreatorTask(Address, u64)` | `u64` | task id at the given 0-based index |
+
+  `push_creator_task` now does one read and two writes regardless of the
+  creator's history size (O(1) per task). `get_tasks_by_creator_paged` reads
+  only the indexed entries required for the requested page. The unpaged
+  `get_tasks_by_creator` is retained for API compatibility but is deprecated
+  and hard-capped at 50 entries to stay within the Soroban 100-entry footprint
+  budget.
+
 ### Added
 
 #### `reward-engine`

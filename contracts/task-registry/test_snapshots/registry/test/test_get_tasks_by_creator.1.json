@@ -23,7 +23,7 @@
                   "string": "tree-planting"
                 },
                 {
-                  "bytes": "f51c10c12df52af4801365a19a71926cbc4e43506ce061b78fe4ee9cf91444e8"
+                  "bytes": "93f0831cc44579c0b49710f42843c1cb675c96fa48d520e5e82cefb78eff7607"
                 },
                 {
                   "i128": "1000"
@@ -57,7 +57,7 @@
                   "string": "tree-planting"
                 },
                 {
-                  "bytes": "29513da5b43da9315b2666914256d4d90b1223178467b778e32b72caf99bcef4"
+                  "bytes": "58a4c45048442bbaa34710066923effba59136c8f944014086d3fe7de4fb24bf"
                 },
                 {
                   "i128": "1000"
@@ -91,7 +91,7 @@
                   "string": "tree-planting"
                 },
                 {
-                  "bytes": "c33e33760b15c84b5e26ebf41e88f2cb67eba72bc601947d305063aaceb48649"
+                  "bytes": "c936dcf0beecf6e10d6839324d2177829bf0e8cf459fc6d6bf788b207abef172"
                 },
                 {
                   "i128": "1000"
@@ -192,7 +192,97 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "CreatorTasks"
+                    "symbol": "CreatorTask"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                  },
+                  {
+                    "u64": "0"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "0"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "CreatorTask"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                  },
+                  {
+                    "u64": "1"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "1"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "CreatorTask"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                  },
+                  {
+                    "u64": "2"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "2"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "CreatorTaskCount"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -201,17 +291,7 @@
               },
               "durability": "persistent",
               "val": {
-                "vec": [
-                  {
-                    "u64": "0"
-                  },
-                  {
-                    "u64": "1"
-                  },
-                  {
-                    "u64": "2"
-                  }
-                ]
+                "u64": "3"
               }
             }
           },
@@ -284,7 +364,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "f51c10c12df52af4801365a19a71926cbc4e43506ce061b78fe4ee9cf91444e8"
+                      "bytes": "93f0831cc44579c0b49710f42843c1cb675c96fa48d520e5e82cefb78eff7607"
                     }
                   },
                   {
@@ -396,7 +476,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "29513da5b43da9315b2666914256d4d90b1223178467b778e32b72caf99bcef4"
+                      "bytes": "58a4c45048442bbaa34710066923effba59136c8f944014086d3fe7de4fb24bf"
                     }
                   },
                   {
@@ -508,7 +588,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "c33e33760b15c84b5e26ebf41e88f2cb67eba72bc601947d305063aaceb48649"
+                      "bytes": "c936dcf0beecf6e10d6839324d2177829bf0e8cf459fc6d6bf788b207abef172"
                     }
                   },
                   {
