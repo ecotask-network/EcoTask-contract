@@ -640,6 +640,9 @@ impl TokenContract {
 
 #[cfg(test)]
 mod test {
+    extern crate std;
+    use std::format;
+
     use crate::{TokenContract, TokenContractClient};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::testutils::Ledger as _;
@@ -1718,5 +1721,188 @@ mod test {
 
         assert_eq!(client.decimals(), 7);
         assert_eq!(client.decimal(), client.decimals());
+    }
+
+    #[test]
+    fn test_mint_at_i128_max_supply() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let user = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+
+        // Verify default max_supply is i128::MAX
+        assert_eq!(client.max_supply(), i128::MAX);
+
+        // Mint i128::MAX amount (supply + amount == i128::MAX)
+        client.mint(&user, &i128::MAX);
+        assert_eq!(client.balance(&user), i128::MAX);
+        assert_eq!(client.total_supply(), i128::MAX);
+
+        // Minting 1 more token when supply + 1 overflows i128 should fail
+        let res = client.try_mint(&user, &1);
+        assert!(res.is_err());
+
+        // Burn exact balance cleanly
+        client.burn(&user, &i128::MAX);
+        assert_eq!(client.balance(&user), 0);
+        assert_eq!(client.total_supply(), 0);
+
+        // Set max supply at exactly i128::MAX
+        client.set_max_supply(&admin, &i128::MAX);
+        assert_eq!(client.max_supply(), i128::MAX);
+
+        // Minting up to i128::MAX succeeds with explicit cap set
+        client.mint(&user, &i128::MAX);
+        assert_eq!(client.balance(&user), i128::MAX);
+        assert_eq!(client.total_supply(), i128::MAX);
+
+        // Minting past cap panics via expect
+        let res_cap = client.try_mint(&user, &1);
+        assert!(res_cap.is_err());
+    }
+
+    #[test]
+    fn test_transfer_to_balance_overflow_boundary() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let from = Address::generate(&e);
+        let to = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+
+        // Set up `to` balance at i128::MAX - 1 and `from` balance at 2 inside contract context
+        e.as_contract(&contract_id, || {
+            crate::storage::write_balance(&e, &to, i128::MAX - 1);
+            crate::storage::write_supply(&e, i128::MAX - 1);
+            crate::storage::write_balance(&e, &from, 2);
+        });
+
+        // Transfer 2 to `to` where `to` balance is i128::MAX - 1 and amount is 2.
+        // Should overflow `to` balance and panic via expect("balance overflow").
+        let res = client.try_transfer(&from, &to, &2);
+        assert!(res.is_err());
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20))]
+
+        #[test]
+        fn proptest_mint_below_cap(amount in 1..=i128::MAX) {
+            let e = Env::default();
+            let admin = Address::generate(&e);
+            let user = Address::generate(&e);
+            let contract_id = e.register(TokenContract, ());
+            let client = TokenContractClient::new(&e, &contract_id);
+
+            client.initialize(
+                &admin,
+                &String::from_str(&e, "ECO"),
+                &String::from_str(&e, "ECO"),
+                &7,
+            );
+
+            e.mock_all_auths();
+
+            // mint with random amount in [1, i128::MAX] never panics when supply remains below cap
+            client.mint(&user, &amount);
+            prop_assert_eq!(client.balance(&user), amount);
+            prop_assert_eq!(client.total_supply(), amount);
+        }
+
+        #[test]
+        fn proptest_transfer_preserves_total_supply(
+            mint_amount in 1..=i128::MAX,
+            transfer_amount in 1..=i128::MAX,
+        ) {
+            let e = Env::default();
+            let admin = Address::generate(&e);
+            let from = Address::generate(&e);
+            let to = Address::generate(&e);
+            let contract_id = e.register(TokenContract, ());
+            let client = TokenContractClient::new(&e, &contract_id);
+
+            client.initialize(
+                &admin,
+                &String::from_str(&e, "ECO"),
+                &String::from_str(&e, "ECO"),
+                &7,
+            );
+
+            e.mock_all_auths();
+            client.mint(&from, &mint_amount);
+
+            if transfer_amount <= mint_amount {
+                let res = client.try_transfer(&from, &to, &transfer_amount);
+                prop_assert!(res.is_ok());
+                prop_assert_eq!(client.balance(&from), mint_amount - transfer_amount);
+                prop_assert_eq!(client.balance(&to), transfer_amount);
+                // Total supply MUST be preserved
+                prop_assert_eq!(client.total_supply(), mint_amount);
+            } else {
+                let res = client.try_transfer(&from, &to, &transfer_amount);
+                prop_assert!(res.is_err());
+                prop_assert_eq!(client.balance(&from), mint_amount);
+                prop_assert_eq!(client.total_supply(), mint_amount);
+            }
+        }
+
+        #[test]
+        fn proptest_burn_preserves_total_supply(
+            mint_amount in 1..=i128::MAX,
+            burn_amount in 1..=i128::MAX,
+        ) {
+            let e = Env::default();
+            let admin = Address::generate(&e);
+            let user = Address::generate(&e);
+            let contract_id = e.register(TokenContract, ());
+            let client = TokenContractClient::new(&e, &contract_id);
+
+            client.initialize(
+                &admin,
+                &String::from_str(&e, "ECO"),
+                &String::from_str(&e, "ECO"),
+                &7,
+            );
+
+            e.mock_all_auths();
+            client.mint(&user, &mint_amount);
+
+            if burn_amount <= mint_amount {
+                let res = client.try_burn(&user, &burn_amount);
+                prop_assert!(res.is_ok());
+                prop_assert_eq!(client.balance(&user), mint_amount - burn_amount);
+                prop_assert_eq!(client.total_supply(), mint_amount - burn_amount);
+                if burn_amount == mint_amount {
+                    prop_assert_eq!(client.balance(&user), 0);
+                    prop_assert_eq!(client.total_supply(), 0);
+                }
+            } else {
+                let res = client.try_burn(&user, &burn_amount);
+                prop_assert!(res.is_err());
+                prop_assert_eq!(client.balance(&user), mint_amount);
+                prop_assert_eq!(client.total_supply(), mint_amount);
+            }
+        }
     }
 }

@@ -38,9 +38,11 @@ package version is bumped.
 
 #### `eco-token`
 
+- **[#41] Added fuzz / property-based arithmetic tests and max supply boundary tests using proptest.**
 - `set_minter` now emits a `MinterUpdatedEvent` (`#[contractevent]`) on
   every successful minter rotation, containing the `admin` (topic),
   `previous_minter`, and `new_minter` fields.
+
 
 ### Changed
 
