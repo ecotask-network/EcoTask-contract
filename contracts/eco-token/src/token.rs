@@ -1,5 +1,5 @@
 use crate::storage;
-use soroban_sdk::{contract, contractevent, contractimpl, Address, Env, String, Symbol};
+use soroban_sdk::{contract, contractevent, contractimpl, Address, Env, String};
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -68,6 +68,15 @@ pub struct MetadataUpdatedEvent {
     pub name: String,
     pub symbol: String,
     pub decimal: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MinterUpdatedEvent {
+    #[topic]
+    pub admin: Address,
+    pub previous_minter: Address,
+    pub new_minter: Address,
 }
 
 #[contract]
@@ -408,10 +417,12 @@ impl TokenContract {
         }
         let previous_minter = storage::read_minter(&e);
         storage::write_minter(&e, &new_minter);
-        e.events().publish(
-            (Symbol::new(&e, "minter_updated"),),
-            (admin, previous_minter, new_minter),
-        );
+        MinterUpdatedEvent {
+            admin,
+            previous_minter,
+            new_minter,
+        }
+        .publish(&e);
     }
 
     /// Burns tokens from an address, reducing the total supply.
@@ -845,15 +856,24 @@ mod test {
         client.set_minter(&admin, &minter);
 
         let events = e.events().all();
-        let topics: soroban_sdk::Vec<Val> = vec![&e, Symbol::new(&e, "minter_updated").to_val()];
-        // `initialize` sets minter = admin, so the previous minter on the first
-        // `set_minter` call is the admin address itself.
-        let data: Val = (admin.clone(), admin.clone(), minter.clone()).into_val(&e);
+        let topics: soroban_sdk::Vec<Val> = vec![
+            &e,
+            Symbol::new(&e, "minter_updated_event").to_val(),
+            admin.clone().into_val(&e),
+        ];
+        let data: Val = soroban_sdk::Map::<Symbol, Val>::from_array(
+            &e,
+            [
+                (
+                    Symbol::new(&e, "previous_minter"),
+                    admin.clone().into_val(&e),
+                ),
+                (Symbol::new(&e, "new_minter"), minter.clone().into_val(&e)),
+            ],
+        )
+        .into_val(&e);
 
-        assert_eq!(
-            events,
-            vec![&e, (contract_id.clone(), topics, data)]
-        );
+        assert_eq!(events, vec![&e, (contract_id.clone(), topics, data)]);
 
         assert_eq!(client.minter(), minter);
     }

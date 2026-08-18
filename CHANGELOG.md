@@ -13,6 +13,19 @@ package version is bumped.
 
 ### Added
 
+#### `eco-token`
+
+- `set_minter` now emits a `MinterUpdatedEvent` (`#[contractevent]`) on
+  every successful minter rotation, containing the `admin` (topic),
+  `previous_minter`, and `new_minter` fields.
+
+### Changed
+
+#### `eco-token`
+
+- `set_minter` now panics with `"token: minter must differ from admin"` when
+  the caller attempts to set `minter == admin`, enforcing role separation.
+
 #### `reward-engine`
 
 - `set_user_cooldown(caller: Address, min_ledgers_between_rewards: u64)` —
