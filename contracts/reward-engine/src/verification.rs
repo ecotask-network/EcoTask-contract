@@ -5,6 +5,12 @@ use soroban_sdk::{
 pub use storage::{Verification, VerificationStatus};
 use task_registry::{Task, TaskStatus};
 
+/// Minimum allowed length for a proof CID string.
+const MIN_CID_LEN: u32 = 10;
+
+/// Maximum allowed length for a proof CID string (covers CIDv1 + multihash).
+const MAX_CID_LEN: u32 = 128;
+
 /// Fetches the task from the registry and enforces that it is active and not
 /// expired. Returns the task so the caller can inspect `reward_amount`.
 ///
@@ -499,6 +505,13 @@ impl RewardEngine {
         require_not_paused(&e);
         oracle.require_auth();
         require_oracle(&e, &oracle);
+
+        if proof_cid.is_empty() {
+            panic!("engine: proof cid must not be empty");
+        }
+        if proof_cid.len() > MAX_CID_LEN {
+            panic!("engine: proof cid too long");
+        }
 
         if storage::read_verification(&e, task_id, &user).is_some() {
             panic!("engine: proof already submitted");
@@ -2063,5 +2076,27 @@ mod test {
 
         let v = client.get_verification(&task2, &user);
         assert_eq!(v.status, VerificationStatus::Approved);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: proof cid must not be empty")]
+    fn test_submit_empty_cid_fails() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: proof cid too long")]
+    fn test_submit_oversized_cid_fails() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        // 129 bytes exceeds MAX_CID_LEN (128)
+        let long_cid = "a".repeat(129);
+        let proof_cid = String::from_str(&e, &long_cid);
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
     }
 }
