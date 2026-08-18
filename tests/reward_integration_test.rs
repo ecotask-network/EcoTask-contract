@@ -1,5 +1,4 @@
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::testutils::budget as _;
 use soroban_sdk::testutils::BytesN;
 use soroban_sdk::{Address, Env, String};
 
