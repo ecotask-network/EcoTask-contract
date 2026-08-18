@@ -1,5 +1,5 @@
 use crate::storage;
-use soroban_sdk::{contract, contractevent, contractimpl, Address, Env, String};
+use soroban_sdk::{contract, contractevent, contractimpl, Address, Env, String, Symbol};
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -400,7 +400,18 @@ impl TokenContract {
         if caller != admin {
             panic!("token: unauthorized");
         }
+        // The minting role must remain separate from the admin role. Allowing
+        // `minter == admin` (the caller here) collapses the role separation the
+        // security model depends on, so reject it explicitly.
+        if new_minter == caller {
+            panic!("token: minter must differ from admin");
+        }
+        let previous_minter = storage::read_minter(&e);
         storage::write_minter(&e, &new_minter);
+        e.events().publish(
+            (Symbol::new(&e, "minter_updated"),),
+            (admin, previous_minter, new_minter),
+        );
     }
 
     /// Burns tokens from an address, reducing the total supply.
@@ -810,6 +821,61 @@ mod test {
 
         e.mock_all_auths();
         client.set_minter(&attacker, &minter);
+    }
+
+    #[test]
+    fn test_set_minter_emits_minter_updated_event() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::vec;
+        use soroban_sdk::{IntoVal, Symbol, Val};
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let minter = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.set_minter(&admin, &minter);
+
+        let events = e.events().all();
+        let topics: soroban_sdk::Vec<Val> = vec![&e, Symbol::new(&e, "minter_updated").to_val()];
+        // `initialize` sets minter = admin, so the previous minter on the first
+        // `set_minter` call is the admin address itself.
+        let data: Val = (admin.clone(), admin.clone(), minter.clone()).into_val(&e);
+
+        assert_eq!(
+            events,
+            vec![&e, (contract_id.clone(), topics, data)]
+        );
+
+        assert_eq!(client.minter(), minter);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: minter must differ from admin")]
+    fn test_set_minter_rejects_admin_as_minter() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        // Setting the minter to the admin itself collapses role separation.
+        client.set_minter(&admin, &admin);
     }
 
     #[test]
