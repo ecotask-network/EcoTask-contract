@@ -23,7 +23,7 @@
                   "string": "trash-collection"
                 },
                 {
-                  "bytes": "d312b4122ea651873d008f38e25d2cbfa5dbe69fc163597fb543c93813df386c"
+                  "bytes": "d257d7e88093fd72649532d71ff00d83a73d9a1d05ac82b03df6158ffe691507"
                 },
                 {
                   "i128": "1000"
@@ -245,7 +245,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "d312b4122ea651873d008f38e25d2cbfa5dbe69fc163597fb543c93813df386c"
+                      "bytes": "d257d7e88093fd72649532d71ff00d83a73d9a1d05ac82b03df6158ffe691507"
                     }
                   },
                   {

@@ -589,9 +589,10 @@ impl RegistryContract {
     }
 
     /// Pageable listing of every task in the registry ordered by id.
-    /// `cursor` is the lowest task id to include (inclusive) and `limit` caps
-    /// the number of tasks returned. Safe for off-chain indexers to paginate
-    /// through without pulling the entire registry in one call.
+    /// `cursor` is the lowest task id to start scanning from (inclusive).
+    /// Gaps (missing or deleted IDs) are skipped and do not count against `limit`.
+    /// A returned page shorter than `limit` indicates the end of the registry has been reached.
+    /// Safe for off-chain indexers to paginate through without pulling the entire registry in one call.
     ///
     /// # Arguments
     ///
@@ -609,9 +610,9 @@ impl RegistryContract {
         while current < count && remaining > 0 {
             if let Some(task) = storage::read_task(&e, current) {
                 tasks.push_back(task);
+                remaining -= 1;
             }
             current += 1;
-            remaining -= 1;
         }
         tasks
     }
@@ -1506,5 +1507,43 @@ mod test {
         client.complete_task(&admin, &task_id, &user);
         let task = client.get_task(&task_id);
         assert_eq!(task.status, TaskStatus::Completed);
+    }
+    #[test]
+    fn test_list_tasks_with_gaps() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let mut ids = Vec::new(&e);
+        for _ in 0..5 {
+            ids.push_back(create_test_task(&client, &admin, &task_type, 1, 1000));
+        }
+
+        // Simulate 2 missing IDs (gap at index 1 and 3)
+        // ids are 0, 1, 2, 3, 4
+        e.as_contract(&client.address, || {
+            e.storage().persistent().remove(&crate::storage::DataKey::Task(ids.get(1).unwrap()));
+            e.storage().persistent().remove(&crate::storage::DataKey::Task(ids.get(3).unwrap()));
+        });
+
+        // Call list_tasks with a limit of 2, starting from 0.
+        // It should skip 1, and return tasks 0 and 2.
+        let page0 = client.list_tasks(&0, &2);
+        assert_eq!(page0.len(), 2);
+        assert_eq!(page0.get(0).unwrap().id, ids.get(0).unwrap());
+        assert_eq!(page0.get(1).unwrap().id, ids.get(2).unwrap());
+
+        // Next page starting from cursor 3 (which is a gap).
+        // It should skip 3, and return task 4. (Only 1 task left)
+        let page1 = client.list_tasks(&3, &2);
+        assert_eq!(page1.len(), 1);
+        assert_eq!(page1.get(0).unwrap().id, ids.get(4).unwrap());
+
+        // Full scan
+        let all = client.list_tasks(&0, &10);
+        assert_eq!(all.len(), 3);
+        assert_eq!(all.get(0).unwrap().id, ids.get(0).unwrap());
+        assert_eq!(all.get(1).unwrap().id, ids.get(2).unwrap());
+        assert_eq!(all.get(2).unwrap().id, ids.get(4).unwrap());
     }
 }
