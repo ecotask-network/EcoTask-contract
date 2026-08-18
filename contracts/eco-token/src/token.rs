@@ -70,6 +70,14 @@ pub struct MetadataUpdatedEvent {
     pub decimal: u32,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferredEvent {
+    #[topic]
+    pub previous_admin: Address,
+    pub new_admin: Address,
+}
+
 #[contract]
 pub struct TokenContract;
 
@@ -369,6 +377,12 @@ impl TokenContract {
             panic!("token: new admin must be different");
         }
         storage::write_admin(&e, &new_admin);
+
+        AdminTransferredEvent {
+            previous_admin: stored_admin,
+            new_admin,
+        }
+        .publish(&e);
     }
 
     /// Returns the current minter address.
@@ -894,6 +908,43 @@ mod test {
 
         e.mock_all_auths();
         client.transfer_admin(&admin, &admin);
+    }
+
+    #[test]
+    fn test_transfer_admin_emits_event() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::IntoVal;
+        use soroban_sdk::{vec, Symbol, Val};
+
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let new_admin = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.transfer_admin(&admin, &new_admin);
+
+        let events = e.events().all();
+        let topics: soroban_sdk::Vec<Val> = vec![
+            &e,
+            Symbol::new(&e, "admin_transferred_event").to_val(),
+            admin.into_val(&e),
+        ];
+        let data: Val = soroban_sdk::Map::<Symbol, Val>::from_array(
+            &e,
+            [(Symbol::new(&e, "new_admin"), new_admin.into_val(&e))],
+        )
+        .into_val(&e);
+
+        assert_eq!(events, vec![&e, (contract_id, topics, data),]);
     }
 
     #[test]

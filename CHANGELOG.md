@@ -13,6 +13,12 @@ package version is bumped.
 
 ### Added
 
+#### `eco-token`, `task-registry`, `reward-engine`
+
+- `AdminTransferredEvent { #[topic] previous_admin, new_admin }` is now emitted
+  after a successful `transfer_admin` call in all three contracts. This allows
+  off-chain indexers to track admin handover for governance auditing.
+
 #### `reward-engine`
 
 - `set_user_cooldown(caller: Address, min_ledgers_between_rewards: u64)` —
