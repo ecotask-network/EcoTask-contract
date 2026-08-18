@@ -450,3 +450,116 @@ fn test_oracle_approval_fails_for_desponsored_creator() {
 
     engine_client.approve_proof(&oracle, &user, &task_id, &500);
 }
+
+#[test]
+#[should_panic(expected = "engine: verification is not pending")]
+fn test_two_oracles_race_to_approve_same_proof() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle_a = Address::generate(&e);
+    let oracle_b = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let token_id = deploy_token(&e, &admin);
+    let reg_id = deploy_registry(&e, &admin);
+    let engine_id = deploy_engine(&e, &admin, &token_id, &reg_id, &oracle_a);
+
+    let engine_client = reward_engine::RewardEngineClient::new(&e, &engine_id);
+    let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+
+    engine_client.add_oracle(&admin, &oracle_b);
+
+    let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+    let task_id = reg_client.create_task(
+        &admin,
+        &String::from_str(&e, "race-test"),
+        &loc_hash,
+        &500,
+        &1,
+        &(e.ledger().timestamp() + 10000),
+    );
+
+    let proof = String::from_str(&e, "QmRaceProof");
+    engine_client.submit_proof(&oracle_a, &user, &task_id, &proof);
+
+    // First approval by Oracle A
+    engine_client.approve_proof(&oracle_a, &user, &task_id, &500);
+
+    // Second approval by Oracle B, should panic
+    engine_client.approve_proof(&oracle_b, &user, &task_id, &500);
+}
+
+#[test]
+fn test_different_oracle_approves_submitted_proof() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle_a = Address::generate(&e);
+    let oracle_b = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let token_id = deploy_token(&e, &admin);
+    let reg_id = deploy_registry(&e, &admin);
+    let engine_id = deploy_engine(&e, &admin, &token_id, &reg_id, &oracle_a);
+
+    let engine_client = reward_engine::RewardEngineClient::new(&e, &engine_id);
+    let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+
+    engine_client.add_oracle(&admin, &oracle_b);
+
+    let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+    let task_id = reg_client.create_task(
+        &admin,
+        &String::from_str(&e, "diff-oracle-test"),
+        &loc_hash,
+        &500,
+        &1,
+        &(e.ledger().timestamp() + 10000),
+    );
+
+    let proof = String::from_str(&e, "QmDiffOracleProof");
+    engine_client.submit_proof(&oracle_a, &user, &task_id, &proof);
+
+    // Approval by Oracle B
+    engine_client.approve_proof(&oracle_b, &user, &task_id, &500);
+
+    let token_client = eco_token::TokenContractClient::new(&e, &token_id);
+    assert_eq!(token_client.balance(&user), 500);
+
+    let v = engine_client.get_verification(&task_id, &user);
+    assert_eq!(v.oracle, oracle_a); // Documents semantic: records submitter
+}
+
+#[test]
+#[should_panic(expected = "engine: verification not found")]
+fn test_approve_before_submit_panics() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let token_id = deploy_token(&e, &admin);
+    let reg_id = deploy_registry(&e, &admin);
+    let engine_id = deploy_engine(&e, &admin, &token_id, &reg_id, &oracle);
+
+    let engine_client = reward_engine::RewardEngineClient::new(&e, &engine_id);
+    let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+
+    let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+    let task_id = reg_client.create_task(
+        &admin,
+        &String::from_str(&e, "approve-before-submit"),
+        &loc_hash,
+        &500,
+        &1,
+        &(e.ledger().timestamp() + 10000),
+    );
+
+    // Call approve_proof without submit_proof
+    engine_client.approve_proof(&oracle, &user, &task_id, &500);
+}

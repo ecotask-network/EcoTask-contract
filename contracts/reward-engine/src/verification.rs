@@ -2064,4 +2064,50 @@ mod test {
         let v = client.get_verification(&task2, &user);
         assert_eq!(v.status, VerificationStatus::Approved);
     }
+
+    #[test]
+    #[should_panic(expected = "engine: verification is not pending")]
+    fn test_two_oracles_race_to_approve_same_proof() {
+        let (e, admin, oracle_a, user, task_id, client) = setup();
+        let oracle_b = Address::generate(&e);
+        client.add_oracle(&admin, &oracle_b);
+
+        let proof = String::from_str(&e, "QmRaceProof");
+        client.submit_proof(&oracle_a, &user, &task_id, &proof);
+
+        // First oracle approves
+        client.approve_proof(&oracle_a, &user, &task_id, &500);
+
+        // Second oracle tries to approve the same proof
+        client.approve_proof(&oracle_b, &user, &task_id, &500);
+    }
+
+    #[test]
+    fn test_different_oracle_approves_submitted_proof() {
+        let (e, admin, oracle_a, user, task_id, client) = setup();
+        let oracle_b = Address::generate(&e);
+        client.add_oracle(&admin, &oracle_b);
+
+        let proof = String::from_str(&e, "QmDiffOracleProof");
+        client.submit_proof(&oracle_a, &user, &task_id, &proof);
+
+        // Second oracle approves
+        client.approve_proof(&oracle_b, &user, &task_id, &500);
+
+        let v = client.get_verification(&task_id, &user);
+        assert_eq!(v.status, VerificationStatus::Approved);
+        // The oracle recorded is the submitter (oracle_a)
+        assert_eq!(v.oracle, oracle_a);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: verification not found")]
+    fn test_approve_before_submit_panics() {
+        let (e, admin, _oracle, user, task_id, client) = setup();
+        let oracle_b = Address::generate(&e);
+        client.add_oracle(&admin, &oracle_b);
+
+        // Oracle tries to approve a proof that was never submitted
+        client.approve_proof(&oracle_b, &user, &task_id, &500);
+    }
 }

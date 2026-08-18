@@ -49,7 +49,7 @@
                   "string": "tree-planting"
                 },
                 {
-                  "bytes": "190154e887240bb5b32fd23e278aec134f927994d5fd958b6dc87ff6876aa442"
+                  "bytes": "4097492f254427759d0e899574e8988ffd06139d718dfb13dd7b6882d9a423fc"
                 },
                 {
                   "i128": "1000"
@@ -314,7 +314,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "190154e887240bb5b32fd23e278aec134f927994d5fd958b6dc87ff6876aa442"
+                      "bytes": "4097492f254427759d0e899574e8988ffd06139d718dfb13dd7b6882d9a423fc"
                     }
                   },
                   {
@@ -440,12 +440,16 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "Oracle"
+                            "symbol": "Oracles"
                           }
                         ]
                       },
                       "val": {
-                        "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                        "vec": [
+                          {
+                            "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4"
+                          }
+                        ]
                       }
                     },
                     {
