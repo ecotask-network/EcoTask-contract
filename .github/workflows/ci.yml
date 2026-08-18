@@ -13,15 +13,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Detect contract and changelog changes
         id: changes
-        uses: dorny/paths-filter@v3
-        with:
-          filters: |
-            contracts:
-              - 'contracts/*/src/*.rs'
-            changelog:
-              - 'CHANGELOG.md'
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE '^contracts/[^/]+/src/[^/]+\.rs$'; then
+            echo "contracts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "contracts=false" >> "$GITHUB_OUTPUT"
+          fi
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE '^CHANGELOG\.md$'; then
+            echo "changelog=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changelog=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Require changelog entry
         if: steps.changes.outputs.contracts == 'true' && steps.changes.outputs.changelog != 'true'
         run: |

@@ -550,7 +550,24 @@ impl RegistryContract {
         storage::is_completed(&e, task_id, &user)
     }
 
-    /// Returns all task IDs created by a specific creator.
+    /// Returns task IDs created by a specific creator, capped at
+    /// `MAX_CREATOR_TASKS_QUERY` entries.
+    ///
+    /// # Deprecation notice
+    ///
+    /// This function is retained for API compatibility but is **deprecated**.
+    /// Callers should migrate to `get_tasks_by_creator_paged`, which reads only
+    /// the entries needed for each page and scales correctly for any number of
+    /// tasks. This unpaged variant returns at most `MAX_CREATOR_TASKS_QUERY`
+    /// (50) results; creators with more tasks than that cap will not see their
+    /// full history through this call.
+    ///
+    /// The cap is intentionally conservative. Soroban enforces a hard limit of
+    /// 100 total ledger-entry footprint entries per transaction. Reading more
+    /// than ~98 indexed `CreatorTask` entries in a single call would breach
+    /// that limit on a real network. The 50-entry cap gives ample headroom
+    /// while still being useful for small creator histories. Use
+    /// `get_tasks_by_creator_paged` to retrieve larger histories safely.
     ///
     /// # Arguments
     ///
@@ -558,14 +575,22 @@ impl RegistryContract {
     ///
     /// # Returns
     ///
-    /// A vector of task IDs created by the specified creator.
+    /// Up to `MAX_CREATOR_TASKS_QUERY` task IDs created by the specified creator.
     pub fn get_tasks_by_creator(e: Env, creator: Address) -> soroban_sdk::Vec<u64> {
-        storage::read_creator_tasks(&e, &creator)
+        /// Hard cap on the unpaged creator-task query. Must stay well below the
+        /// Soroban per-transaction ledger-entry footprint limit (100 entries).
+        /// Use `get_tasks_by_creator_paged` for creators with more than this
+        /// many tasks.
+        const MAX_CREATOR_TASKS_QUERY: u64 = 50;
+        storage::read_creator_tasks_paged(&e, &creator, 0, MAX_CREATOR_TASKS_QUERY)
     }
 
-    /// Pageable slice of the task ids created by `creator`. `cursor` is the
-    /// zero-based offset into the creator's full task list and `limit` caps
-    /// the number of ids returned.
+    /// Pageable slice of the task IDs created by `creator`.
+    ///
+    /// `cursor` is the zero-based offset into the creator's indexed task list
+    /// and `limit` caps the number of IDs returned. Only the storage entries
+    /// for the requested page are read; the full creator history is never
+    /// loaded. This is the canonical way to enumerate a creator's tasks.
     ///
     /// # Arguments
     ///
@@ -582,10 +607,7 @@ impl RegistryContract {
         cursor: u32,
         limit: u32,
     ) -> soroban_sdk::Vec<u64> {
-        let ids = storage::read_creator_tasks(&e, &creator);
-        let start = cursor.min(ids.len());
-        let end = (start + limit).min(ids.len());
-        ids.slice(start..end)
+        storage::read_creator_tasks_paged(&e, &creator, cursor as u64, limit as u64)
     }
 
     /// Pageable listing of every task in the registry ordered by id.
@@ -1506,5 +1528,282 @@ mod test {
         client.complete_task(&admin, &task_id, &user);
         let task = client.get_task(&task_id);
         assert_eq!(task.status, TaskStatus::Completed);
+    }
+
+    // =========================================================================
+    // Issue #52 regression tests — indexed CreatorTask storage
+    // =========================================================================
+
+    /// Regression test: creating 500 tasks for one creator must not panic or
+    /// fail. Before fix #52 the unbounded `CreatorTasks` Vec would grow with
+    /// every task, making each creation O(n) in storage reads/writes. This
+    /// test verifies that the 500th creation succeeds with the new indexed
+    /// storage layout.
+    #[test]
+    fn test_500_task_regression_creation_succeeds() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let mut last_id: u64 = 0;
+
+        for i in 0u32..500 {
+            last_id = create_test_task(&client, &admin, &task_type, 1, 1_000_000 + i as u64);
+        }
+
+        // The 500th creation (index 499) must have succeeded.
+        assert_eq!(last_id, 499);
+
+        // The task is readable through the normal path.
+        let task = client.get_task(&last_id);
+        assert_eq!(task.id, last_id);
+        assert_eq!(task.creator, admin);
+        assert_eq!(task.status, TaskStatus::Active);
+    }
+
+    /// Regression test: the indexed creator task count reaches 500 after
+    /// creating 500 tasks, and all IDs are retrievable through pagination.
+    #[test]
+    fn test_500_task_creator_count_and_full_retrieval() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "coastline-cleanup");
+        let mut expected_ids: Vec<u64> = Vec::new(&e);
+
+        for i in 0u32..500 {
+            let id = create_test_task(&client, &admin, &task_type, 1, 1_000_000 + i as u64);
+            expected_ids.push_back(id);
+        }
+
+        // Pagination: first page
+        let page0 = client.get_tasks_by_creator_paged(&admin, &0, &10);
+        assert_eq!(page0.len(), 10);
+        for i in 0..10u32 {
+            assert_eq!(page0.get(i).unwrap(), expected_ids.get(i).unwrap());
+        }
+
+        // Pagination: middle page at offset 100, limit 50
+        let page_mid = client.get_tasks_by_creator_paged(&admin, &100, &50);
+        assert_eq!(page_mid.len(), 50);
+        for i in 0..50u32 {
+            assert_eq!(page_mid.get(i).unwrap(), expected_ids.get(100 + i).unwrap());
+        }
+
+        // Pagination: near-end page at offset 450, limit 50
+        let page_near_end = client.get_tasks_by_creator_paged(&admin, &450, &50);
+        assert_eq!(page_near_end.len(), 50);
+        for i in 0..50u32 {
+            assert_eq!(
+                page_near_end.get(i).unwrap(),
+                expected_ids.get(450 + i).unwrap()
+            );
+        }
+
+        // Pagination: partial final page at offset 490, limit 20 — only 10 remain
+        let page_partial = client.get_tasks_by_creator_paged(&admin, &490, &20);
+        assert_eq!(page_partial.len(), 10);
+        for i in 0..10u32 {
+            assert_eq!(
+                page_partial.get(i).unwrap(),
+                expected_ids.get(490 + i).unwrap()
+            );
+        }
+
+        // Pagination: offset == count → empty
+        let page_at_end = client.get_tasks_by_creator_paged(&admin, &500, &20);
+        assert_eq!(page_at_end.len(), 0);
+
+        // Pagination: offset > count → empty
+        let page_beyond = client.get_tasks_by_creator_paged(&admin, &600, &20);
+        assert_eq!(page_beyond.len(), 0);
+    }
+
+    /// Verifies that creator task count increments correctly for each new task.
+    #[test]
+    fn test_creator_task_count_increments() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+
+        // No tasks yet — empty page
+        let empty = client.get_tasks_by_creator_paged(&admin, &0, &10);
+        assert_eq!(empty.len(), 0);
+
+        // One task
+        let id0 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let one = client.get_tasks_by_creator_paged(&admin, &0, &10);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one.get(0).unwrap(), id0);
+
+        // Two tasks
+        let id1 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let two = client.get_tasks_by_creator_paged(&admin, &0, &10);
+        assert_eq!(two.len(), 2);
+        assert_eq!(two.get(0).unwrap(), id0);
+        assert_eq!(two.get(1).unwrap(), id1);
+
+        // Three tasks
+        let id2 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let three = client.get_tasks_by_creator_paged(&admin, &0, &10);
+        assert_eq!(three.len(), 3);
+        assert_eq!(three.get(0).unwrap(), id0);
+        assert_eq!(three.get(1).unwrap(), id1);
+        assert_eq!(three.get(2).unwrap(), id2);
+    }
+
+    /// Verifies that multiple creators each maintain independent indexed lists.
+    #[test]
+    fn test_multiple_creators_independent_indexes() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let sponsor1 = Address::generate(&e);
+        let sponsor2 = Address::generate(&e);
+        client.add_sponsor(&admin, &sponsor1);
+        client.add_sponsor(&admin, &sponsor2);
+
+        let task_type = String::from_str(&e, "tree-planting");
+
+        // sponsor1 creates 3 tasks
+        let s1_id0 = create_test_task(&client, &sponsor1, &task_type, 1, 1000);
+        let s1_id1 = create_test_task(&client, &sponsor1, &task_type, 1, 1000);
+        let s1_id2 = create_test_task(&client, &sponsor1, &task_type, 1, 1000);
+
+        // sponsor2 creates 2 tasks
+        let s2_id0 = create_test_task(&client, &sponsor2, &task_type, 1, 1000);
+        let s2_id1 = create_test_task(&client, &sponsor2, &task_type, 1, 1000);
+
+        // sponsor1's list must contain exactly the 3 tasks, in order
+        let s1_ids = client.get_tasks_by_creator_paged(&sponsor1, &0, &10);
+        assert_eq!(s1_ids.len(), 3);
+        assert_eq!(s1_ids.get(0).unwrap(), s1_id0);
+        assert_eq!(s1_ids.get(1).unwrap(), s1_id1);
+        assert_eq!(s1_ids.get(2).unwrap(), s1_id2);
+
+        // sponsor2's list must contain exactly the 2 tasks, in order
+        let s2_ids = client.get_tasks_by_creator_paged(&sponsor2, &0, &10);
+        assert_eq!(s2_ids.len(), 2);
+        assert_eq!(s2_ids.get(0).unwrap(), s2_id0);
+        assert_eq!(s2_ids.get(1).unwrap(), s2_id1);
+
+        // admin's list is empty (admin created no tasks in this test)
+        let admin_ids = client.get_tasks_by_creator_paged(&admin, &0, &10);
+        assert_eq!(admin_ids.len(), 0);
+    }
+
+    /// Edge case: limit == 0 returns an empty vector without panicking.
+    #[test]
+    fn test_paged_limit_zero_returns_empty() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        create_test_task(&client, &admin, &task_type, 1, 1000);
+
+        let result = client.get_tasks_by_creator_paged(&admin, &0, &0);
+        assert_eq!(result.len(), 0);
+    }
+
+    /// Edge case: limit == 1 returns exactly one entry.
+    #[test]
+    fn test_paged_limit_one() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let id0 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        create_test_task(&client, &admin, &task_type, 1, 1000);
+
+        let result = client.get_tasks_by_creator_paged(&admin, &0, &1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get(0).unwrap(), id0);
+    }
+
+    /// Edge case: limit larger than remaining tasks returns only the
+    /// remaining entries (partial final page).
+    #[test]
+    fn test_paged_limit_larger_than_remaining() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let id0 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let id1 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let id2 = create_test_task(&client, &admin, &task_type, 1, 1000);
+
+        // 5 tasks requested but only 2 remain after offset 1
+        let result = client.get_tasks_by_creator_paged(&admin, &1, &5);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get(0).unwrap(), id1);
+        assert_eq!(result.get(1).unwrap(), id2);
+
+        // Also check id0 isn't lost
+        let first = client.get_tasks_by_creator_paged(&admin, &0, &1);
+        assert_eq!(first.get(0).unwrap(), id0);
+    }
+
+    /// Verifies that the deprecated unpaged `get_tasks_by_creator` still
+    /// works correctly for creators with fewer than the 200-entry cap.
+    #[test]
+    fn test_get_tasks_by_creator_below_cap() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let id0 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let id1 = create_test_task(&client, &admin, &task_type, 1, 1000);
+
+        let ids = client.get_tasks_by_creator(&admin);
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids.get(0).unwrap(), id0);
+        assert_eq!(ids.get(1).unwrap(), id1);
+    }
+
+    /// Verifies that the deprecated unpaged `get_tasks_by_creator` caps at
+    /// 50 entries for a creator with exactly 51 tasks.
+    #[test]
+    fn test_get_tasks_by_creator_hard_cap_at_50() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        for i in 0u32..51 {
+            create_test_task(&client, &admin, &task_type, 1, 1_000_000 + i as u64);
+        }
+
+        // Unpaged call must be capped at 50.
+        let ids = client.get_tasks_by_creator(&admin);
+        assert_eq!(ids.len(), 50);
+
+        // The 51st task IS accessible through pagination.
+        let paged = client.get_tasks_by_creator_paged(&admin, &50, &10);
+        assert_eq!(paged.len(), 1);
+    }
+
+    /// Verifies no duplicate task IDs appear anywhere in a creator's indexed
+    /// list when many tasks are created.
+    #[test]
+    fn test_no_duplicate_ids_in_creator_list() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let n: u32 = 50;
+
+        for i in 0u32..n {
+            create_test_task(&client, &admin, &task_type, 1, 1_000_000 + i as u64);
+        }
+
+        // Retrieve all entries and check for duplicates.
+        let all = client.get_tasks_by_creator_paged(&admin, &0, &n);
+        assert_eq!(all.len(), n);
+
+        // Verify each expected ID appears exactly once.
+        for i in 0u32..n {
+            let id = all.get(i).unwrap();
+            assert_eq!(id, i as u64); // tasks were created 0..n in order
+        }
     }
 }
