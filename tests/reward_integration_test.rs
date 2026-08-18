@@ -542,12 +542,8 @@ fn test_approve_proof_budget() {
     let cpu = e.cost_estimate().budget().cpu_instruction_cost();
     let mem = e.cost_estimate().budget().memory_bytes_cost();
 
-    println!(
-        "\n[test_approve_proof_budget]"
-    );
-    println!(
-        "  submit_proof + approve_proof"
-    );
+    println!("\n[test_approve_proof_budget]");
+    println!("  submit_proof + approve_proof");
     println!(
         "  CPU instructions : {:>12} / {:>12}  ({:.1}% of 50% threshold, {:.1}% of mainnet limit)",
         cpu,
@@ -618,12 +614,8 @@ fn test_dispute_resolve_budget() {
     let cpu = e.cost_estimate().budget().cpu_instruction_cost();
     let mem = e.cost_estimate().budget().memory_bytes_cost();
 
-    println!(
-        "\n[test_dispute_resolve_budget]"
-    );
-    println!(
-        "  dispute_proof + resolve_dispute (approve path)"
-    );
+    println!("\n[test_dispute_resolve_budget]");
+    println!("  dispute_proof + resolve_dispute (approve path)");
     println!(
         "  CPU instructions : {:>12} / {:>12}  ({:.1}% of 50% threshold, {:.1}% of mainnet limit)",
         cpu,
