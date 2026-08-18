@@ -100,6 +100,14 @@ pub struct OracleRemovedEvent {
     pub oracle: Address,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminTransferredEvent {
+    #[topic]
+    pub previous_admin: Address,
+    pub new_admin: Address,
+}
+
 #[contract]
 pub struct RewardEngine;
 
@@ -981,7 +989,14 @@ impl RewardEngine {
         if new_admin == current_admin {
             panic!("engine: new admin must be different");
         }
+        let stored_admin = storage::read_admin(&e);
         storage::write_admin(&e, &new_admin);
+
+        AdminTransferredEvent {
+            previous_admin: stored_admin,
+            new_admin,
+        }
+        .publish(&e);
     }
 }
 
@@ -1482,6 +1497,44 @@ mod test {
         e.mock_all_auths_allowing_non_root_auth();
 
         client.transfer_admin(&admin, &admin);
+    }
+
+    #[test]
+    fn test_transfer_admin_emits_event() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::IntoVal;
+        use soroban_sdk::{vec, Symbol, Val};
+
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let oracle = Address::generate(&e);
+        let token_id = deploy_token(&e, &admin);
+        let reg_id = deploy_registry(&e, &admin);
+        let engine_id = e.register(RewardEngine, ());
+        let client = RewardEngineClient::new(&e, &engine_id);
+
+        e.mock_all_auths_allowing_non_root_auth();
+        client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+        let new_admin = Address::generate(&e);
+        client.transfer_admin(&admin, &new_admin);
+
+        let events = e.events().all();
+        let topics: soroban_sdk::Vec<Val> = vec![
+            &e,
+            Symbol::new(&e, "admin_transferred_event").to_val(),
+            admin.into_val(&e),
+        ];
+        let data: Val = soroban_sdk::Map::<Symbol, Val>::from_array(
+            &e,
+            [(Symbol::new(&e, "new_admin"), new_admin.into_val(&e))],
+        )
+        .into_val(&e);
+
+        assert_eq!(
+            events,
+            vec![&e, (engine_id, topics, data),]
+        );
     }
 
     #[test]
