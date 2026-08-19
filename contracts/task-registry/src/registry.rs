@@ -55,6 +55,11 @@ pub struct SponsorRemovedEvent {
     pub sponsor: Address,
 }
 
+/// Maximum allowed length, in bytes, for a task's `task_type` string.
+///
+/// This bounds the amount of ledger storage a single task can consume.
+pub const MAX_TASK_TYPE_LEN: u32 = 64;
+
 #[contract]
 pub struct RegistryContract;
 
@@ -142,6 +147,7 @@ impl RegistryContract {
     /// # Panics
     ///
     /// * Panics if `task_type` is empty
+    /// * Panics if `task_type` is longer than `MAX_TASK_TYPE_LEN` bytes
     /// * Panics if `reward_amount <= 0`
     /// * Panics if `max_completions == 0`
     /// * Panics if `expires_at` is in the past
@@ -164,6 +170,9 @@ impl RegistryContract {
 
         if task_type.is_empty() {
             panic!("registry: task type must not be empty");
+        }
+        if task_type.len() > MAX_TASK_TYPE_LEN {
+            panic!("registry: task type too long");
         }
         if reward_amount <= 0 {
             panic!("registry: reward must be positive");
@@ -1115,6 +1124,45 @@ mod test {
         client.create_task(
             &admin,
             &String::from_str(&e, ""),
+            &loc_hash,
+            &1000,
+            &1,
+            &(e.ledger().timestamp() + 1000),
+        );
+    }
+
+    #[test]
+    fn test_create_task_max_length_type() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, &"a".repeat(super::MAX_TASK_TYPE_LEN as usize));
+        let loc_hash: BytesN<32> = BytesN::random(&e);
+        let task_id = client.create_task(
+            &admin,
+            &task_type,
+            &loc_hash,
+            &1000,
+            &1,
+            &(e.ledger().timestamp() + 1000),
+        );
+
+        let task = client.get_task(&task_id);
+        assert_eq!(task.task_type, task_type);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: task type too long")]
+    fn test_create_task_oversized_type() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type =
+            String::from_str(&e, &"a".repeat(super::MAX_TASK_TYPE_LEN as usize + 1));
+        let loc_hash: BytesN<32> = BytesN::random(&e);
+        client.create_task(
+            &admin,
+            &task_type,
             &loc_hash,
             &1000,
             &1,
