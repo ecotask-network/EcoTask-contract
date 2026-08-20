@@ -11,6 +11,17 @@ package version is bumped.
 
 ## [Unreleased]
 
+### Security
+
+#### `eco-token`, `task-registry`, and `reward-engine`
+
+- Admin rotation now uses a two-step handover. The current admin proposes a
+  successor with `propose_admin`, and the proposed address must authenticate
+  and call `accept_admin` before receiving control. The existing
+  `transfer_admin` entry point remains as a compatibility alias for the
+  proposal step. Successful proposals and acceptances emit
+  `AdminProposedEvent` and `AdminAcceptedEvent`, respectively.
+
 ### Fixed
 
 #### `task-registry`

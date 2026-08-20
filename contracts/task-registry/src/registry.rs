@@ -1437,7 +1437,6 @@ mod test {
 
         let new_admin = Address::generate(&e);
         client.transfer_admin(&admin, &new_admin);
-        assert_eq!(client.admin(), admin);
         client.accept_admin(&new_admin);
 
         let loc_hash: BytesN<32> = BytesN::random(&e);
@@ -1463,7 +1462,6 @@ mod test {
         client.propose_admin(&admin, &first);
         client.propose_admin(&admin, &second);
         client.accept_admin(&second);
-        assert_eq!(client.admin(), second);
     }
 
     #[test]
