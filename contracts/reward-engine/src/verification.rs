@@ -5,9 +5,6 @@ use soroban_sdk::{
 pub use storage::{Verification, VerificationStatus};
 use task_registry::{Task, TaskStatus};
 
-/// Minimum allowed length for a proof CID string.
-const MIN_CID_LEN: u32 = 10;
-
 /// Maximum allowed length for a proof CID string (covers CIDv1 + multihash).
 const MAX_CID_LEN: u32 = 128;
 
