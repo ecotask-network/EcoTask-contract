@@ -622,6 +622,7 @@ impl TokenContract {
     /// # Panics
     ///
     /// * Panics if `amount <= 0`
+    /// * Panics if `from == to`
     /// * Panics if no allowance exists or it has expired
     /// * Panics if the allowance is insufficient for the transfer amount
     /// * Panics if `from` has insufficient balance
@@ -634,6 +635,10 @@ impl TokenContract {
 
         if amount <= 0 {
             panic!("token: amount must be positive");
+        }
+
+        if from == to {
+            panic!("token: cannot transfer to self");
         }
 
         let allowance = match storage::read_allowance(&e, &from, &spender) {
@@ -650,7 +655,7 @@ impl TokenContract {
             panic!("token: insufficient allowance");
         }
 
-        storage::spend_allowance(&e, &from, &spender, amount);
+        storage::spend_allowance(&e, &from, &spender, &allowance, amount);
 
         let from_balance = storage::read_balance(&e, &from);
         if from_balance < amount {
@@ -1272,6 +1277,29 @@ mod test {
         e.mock_all_auths();
         client.mint(&owner, &1000);
         client.transfer_from(&spender, &owner, &recipient, &100);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: cannot transfer to self")]
+    fn test_transfer_from_self_is_rejected() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let owner = Address::generate(&e);
+        let spender = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.mint(&owner, &1000);
+        client.approve(&owner, &spender, &500, &(e.ledger().sequence() + 100));
+        client.transfer_from(&spender, &owner, &owner, &100);
     }
 
     #[test]

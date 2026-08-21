@@ -290,17 +290,26 @@ pub fn remove_allowance(e: &Env, owner: &Address, spender: &Address) {
 /// * `e` - The Soroban environment
 /// * `owner` - The address that owns the tokens
 /// * `spender` - The address authorized to spend
+/// * `allowance` - The existing allowance details
 /// * `amount` - The amount to deduct from the allowance
 ///
 /// # Panics
 ///
-/// Panics if the allowance does not exist or would underflow.
-pub fn spend_allowance(e: &Env, owner: &Address, spender: &Address, amount: i128) {
+/// Panics if the allowance would underflow.
+pub fn spend_allowance(
+    e: &Env,
+    owner: &Address,
+    spender: &Address,
+    allowance: &Allowance,
+    amount: i128,
+) {
     let key = (symbol_short!("allow"), owner.clone(), spender.clone());
-    let mut allowance: Allowance = e.storage().persistent().get(&key).unwrap();
-    allowance.amount = allowance
-        .amount
-        .checked_sub(amount)
-        .expect("allowance underflow");
-    e.storage().persistent().set(&key, &allowance);
+    let updated = Allowance {
+        amount: allowance
+            .amount
+            .checked_sub(amount)
+            .expect("allowance underflow"),
+        expiration_ledger: allowance.expiration_ledger,
+    };
+    e.storage().persistent().set(&key, &updated);
 }
