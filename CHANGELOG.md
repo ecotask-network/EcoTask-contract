@@ -11,7 +11,23 @@ package version is bumped.
 
 ## [Unreleased]
 
+### Security
+
+#### `eco-token`, `task-registry`, and `reward-engine`
+
+- Admin rotation now uses a two-step handover. The current admin proposes a
+  successor with `propose_admin`, and the proposed address must authenticate
+  and call `accept_admin` before receiving control. The existing
+  `transfer_admin` entry point remains as a compatibility alias for the
+  proposal step. Successful proposals and acceptances emit
+  `AdminProposedEvent` and `AdminAcceptedEvent`, respectively.
+
 ### Fixed
+
+#### `eco-token`
+
+- **[#67] Prevent self-transfer allowance drain in `transfer_from` and fix storage re-fetch TOCTOU in `spend_allowance`.**
+  `transfer_from` now panics with `"token: cannot transfer to self"` when `from == to`, preventing spenders from burning an owner's allowance without transferring tokens. `spend_allowance` in `storage.rs` now accepts the `&Allowance` struct directly instead of re-fetching from persistent storage with `.unwrap()`, eliminating a potential TOCTOU window.
 
 #### `task-registry`
 
@@ -74,6 +90,16 @@ Storage layout additions:
 Error strings:
 
 - `engine: user cooldown active`
+
+#### `reward-engine` (proof CID validation)
+
+- `submit_proof` validates `proof_cid` length, rejecting empty or oversized
+  (`> MAX_CID_LEN` bytes) CID strings before hashing/storage.
+
+Error strings:
+
+- `engine: proof cid must not be empty`
+- `engine: proof cid too long`
 
 ## [0.1.0-alpha] - 2026-08-17
 

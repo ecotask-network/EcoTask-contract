@@ -74,6 +74,18 @@ pub fn has_admin(e: &Env) -> bool {
     e.storage().instance().has(&symbol_short!("admin"))
 }
 
+pub fn write_pending_admin(e: &Env, admin: &Address) {
+    e.storage().instance().set(&symbol_short!("pending"), admin);
+}
+
+pub fn read_pending_admin(e: &Env) -> Option<Address> {
+    e.storage().instance().get(&symbol_short!("pending"))
+}
+
+pub fn remove_pending_admin(e: &Env) {
+    e.storage().instance().remove(&symbol_short!("pending"));
+}
+
 /// Writes the minter address to instance storage.
 ///
 /// # Arguments
@@ -278,17 +290,26 @@ pub fn remove_allowance(e: &Env, owner: &Address, spender: &Address) {
 /// * `e` - The Soroban environment
 /// * `owner` - The address that owns the tokens
 /// * `spender` - The address authorized to spend
+/// * `allowance` - The existing allowance details
 /// * `amount` - The amount to deduct from the allowance
 ///
 /// # Panics
 ///
-/// Panics if the allowance does not exist or would underflow.
-pub fn spend_allowance(e: &Env, owner: &Address, spender: &Address, amount: i128) {
+/// Panics if the allowance would underflow.
+pub fn spend_allowance(
+    e: &Env,
+    owner: &Address,
+    spender: &Address,
+    allowance: &Allowance,
+    amount: i128,
+) {
     let key = (symbol_short!("allow"), owner.clone(), spender.clone());
-    let mut allowance: Allowance = e.storage().persistent().get(&key).unwrap();
-    allowance.amount = allowance
-        .amount
-        .checked_sub(amount)
-        .expect("allowance underflow");
-    e.storage().persistent().set(&key, &allowance);
+    let updated = Allowance {
+        amount: allowance
+            .amount
+            .checked_sub(amount)
+            .expect("allowance underflow"),
+        expiration_ledger: allowance.expiration_ledger,
+    };
+    e.storage().persistent().set(&key, &updated);
 }

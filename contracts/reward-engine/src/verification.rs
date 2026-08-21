@@ -5,6 +5,9 @@ use soroban_sdk::{
 pub use storage::{Verification, VerificationStatus};
 use task_registry::{Task, TaskStatus};
 
+/// Maximum allowed length for a proof CID string (covers CIDv1 + multihash).
+const MAX_CID_LEN: u32 = 128;
+
 /// Fetches the task from the registry and enforces that it is active and not
 /// expired. Returns the task so the caller can inspect `reward_amount`.
 ///
@@ -31,6 +34,9 @@ fn require_active_task(e: &Env, task_id: u64) -> Task {
     if task.status != TaskStatus::Active {
         panic!("engine: task is not active");
     }
+    // Semantics: a task is live when expires_at >= now (i.e. it expires
+    // only after the timestamp strictly exceeds expires_at). This must
+    // match task_registry::registry::complete_task exactly.
     if task.expires_at < e.ledger().timestamp() {
         panic!("engine: task has expired");
     }
@@ -98,6 +104,22 @@ pub struct OracleAddedEvent {
 pub struct OracleRemovedEvent {
     #[topic]
     pub oracle: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposedEvent {
+    #[topic]
+    pub current_admin: Address,
+    #[topic]
+    pub proposed_admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAcceptedEvent {
+    #[topic]
+    pub new_admin: Address,
 }
 
 #[contract]
@@ -499,6 +521,13 @@ impl RewardEngine {
         require_not_paused(&e);
         oracle.require_auth();
         require_oracle(&e, &oracle);
+
+        if proof_cid.is_empty() {
+            panic!("engine: proof cid must not be empty");
+        }
+        if proof_cid.len() > MAX_CID_LEN {
+            panic!("engine: proof cid too long");
+        }
 
         if storage::read_verification(&e, task_id, &user).is_some() {
             panic!("engine: proof already submitted");
@@ -975,13 +1004,39 @@ impl RewardEngine {
     /// # Auth
     ///
     /// Requires authentication from the current admin address.
-    pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+    pub fn propose_admin(e: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
         require_admin(&e, &current_admin);
         if new_admin == current_admin {
             panic!("engine: new admin must be different");
         }
-        storage::write_admin(&e, &new_admin);
+        storage::write_pending_admin(&e, &new_admin);
+        AdminProposedEvent {
+            current_admin,
+            proposed_admin: new_admin,
+        }
+        .publish(&e);
+    }
+
+    pub fn accept_admin(e: Env, pending_admin: Address) {
+        pending_admin.require_auth();
+        let proposed =
+            storage::read_pending_admin(&e).unwrap_or_else(|| panic!("engine: no pending admin"));
+        if pending_admin != proposed {
+            panic!("engine: unauthorized pending admin");
+        }
+        storage::write_admin(&e, &pending_admin);
+        storage::remove_pending_admin(&e);
+        AdminAcceptedEvent {
+            new_admin: pending_admin,
+        }
+        .publish(&e);
+    }
+
+    // DEPRECATED: use propose_admin. This alias preserves the existing ABI while
+    // requiring the proposed admin to accept before gaining control.
+    pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+        Self::propose_admin(e, current_admin, new_admin);
     }
 }
 
@@ -1337,6 +1392,57 @@ mod test {
     }
 
     #[test]
+    fn test_approve_at_exact_expiry_boundary() {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&e);
+        let oracle = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        let token_id = deploy_token(&e, &admin);
+        let reg_id = deploy_registry(&e, &admin);
+
+        let engine_id = e.register(RewardEngine, ());
+        let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+        let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+        reg_client.add_sponsor(&admin, &engine_id);
+
+        engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+        // Create task with expiry at exactly timestamp 2000.
+        e.ledger().set_timestamp(1000);
+        let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+        let task_id = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            &loc_hash,
+            &1000,
+            &1,
+            &2000,
+        );
+
+        // At expires_at == 2000 the task is still live (< semantics).
+        e.ledger().set_timestamp(2000);
+        let proof_cid = String::from_str(&e, "QmBoundary");
+        engine_client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        engine_client.approve_proof(&oracle, &user, &task_id, &1000);
+
+        let token_client = eco_token::TokenContractClient::new(&e, &token_id);
+        assert_eq!(token_client.balance(&user), 1000);
+        assert!(reg_client.is_task_completed(&task_id, &user));
+
+        // One second later the task is expired.
+        e.ledger().set_timestamp(2001);
+        let user2 = Address::generate(&e);
+        let proof_cid2 = String::from_str(&e, "QmAfterExpiry");
+        engine_client.submit_proof(&oracle, &user2, &task_id, &proof_cid2);
+        let result = engine_client.try_approve_proof(&oracle, &user2, &task_id, &1000);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_reward_range_enforced() {
         let (e, admin, oracle, user, task_id, client) = setup();
         e.mock_all_auths_allowing_non_root_auth();
@@ -1459,9 +1565,40 @@ mod test {
 
         let new_admin = Address::generate(&e);
         client.transfer_admin(&admin, &new_admin);
+        client.accept_admin(&new_admin);
 
         let new_oracle = Address::generate(&e);
         client.set_oracle(&new_admin, &new_oracle);
+    }
+
+    #[test]
+    fn test_propose_admin_overwrite() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+        let first = Address::generate(&e);
+        let second = Address::generate(&e);
+        client.propose_admin(&admin, &first);
+        client.propose_admin(&admin, &second);
+        client.accept_admin(&second);
+        let new_oracle = Address::generate(&e);
+        client.set_oracle(&second, &new_oracle);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: unauthorized pending admin")]
+    fn test_accept_admin_wrong_address() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+        client.propose_admin(&admin, &Address::generate(&e));
+        client.accept_admin(&Address::generate(&e));
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: no pending admin")]
+    fn test_accept_admin_without_proposal() {
+        let (e, _admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+        client.accept_admin(&Address::generate(&e));
     }
 
     #[test]
@@ -2063,5 +2200,27 @@ mod test {
 
         let v = client.get_verification(&task2, &user);
         assert_eq!(v.status, VerificationStatus::Approved);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: proof cid must not be empty")]
+    fn test_submit_empty_cid_fails() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: proof cid too long")]
+    fn test_submit_oversized_cid_fails() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        // 129 bytes exceeds MAX_CID_LEN (128)
+        let long_cid = "a".repeat(129);
+        let proof_cid = String::from_str(&e, &long_cid);
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
     }
 }
