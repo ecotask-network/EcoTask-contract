@@ -50,6 +50,13 @@ package version is bumped.
   and hard-capped at 50 entries to stay within the Soroban 100-entry footprint
   budget.
 
+- **[#35] `task_type` is now bounded to `MAX_TASK_TYPE_LEN` (64 bytes).**
+  `create_task` previously only checked that `task_type` was non-empty, so a
+  sponsor could store an arbitrarily large string, inflating per-task ledger
+  rent (and multiplying that cost across `max_completions` completion
+  records). `create_task` now panics with `"registry: task type too long"`
+  when `task_type.len() > 64`.
+
 ### Added
 
 #### `eco-token`
