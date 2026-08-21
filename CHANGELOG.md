@@ -24,6 +24,11 @@ package version is bumped.
 
 ### Fixed
 
+#### `eco-token`
+
+- **[#67] Prevent self-transfer allowance drain in `transfer_from` and fix storage re-fetch TOCTOU in `spend_allowance`.**
+  `transfer_from` now panics with `"token: cannot transfer to self"` when `from == to`, preventing spenders from burning an owner's allowance without transferring tokens. `spend_allowance` in `storage.rs` now accepts the `&Allowance` struct directly instead of re-fetching from persistent storage with `.unwrap()`, eliminating a potential TOCTOU window.
+
 #### `task-registry`
 
 - **[#52] Unbounded `CreatorTasks` Vec replaced with indexed persistent
