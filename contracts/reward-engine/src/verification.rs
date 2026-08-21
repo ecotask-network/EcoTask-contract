@@ -31,6 +31,9 @@ fn require_active_task(e: &Env, task_id: u64) -> Task {
     if task.status != TaskStatus::Active {
         panic!("engine: task is not active");
     }
+    // Semantics: a task is live when expires_at >= now (i.e. it expires
+    // only after the timestamp strictly exceeds expires_at). This must
+    // match task_registry::registry::complete_task exactly.
     if task.expires_at < e.ledger().timestamp() {
         panic!("engine: task has expired");
     }
@@ -1376,6 +1379,57 @@ mod test {
         assert_eq!(token_client.balance(&user), 1000);
 
         assert!(reg_client.is_task_completed(&task_id, &user));
+    }
+
+    #[test]
+    fn test_approve_at_exact_expiry_boundary() {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&e);
+        let oracle = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        let token_id = deploy_token(&e, &admin);
+        let reg_id = deploy_registry(&e, &admin);
+
+        let engine_id = e.register(RewardEngine, ());
+        let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+        let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+        reg_client.add_sponsor(&admin, &engine_id);
+
+        engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+        // Create task with expiry at exactly timestamp 2000.
+        e.ledger().set_timestamp(1000);
+        let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+        let task_id = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            &loc_hash,
+            &1000,
+            &1,
+            &2000,
+        );
+
+        // At expires_at == 2000 the task is still live (< semantics).
+        e.ledger().set_timestamp(2000);
+        let proof_cid = String::from_str(&e, "QmBoundary");
+        engine_client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        engine_client.approve_proof(&oracle, &user, &task_id, &1000);
+
+        let token_client = eco_token::TokenContractClient::new(&e, &token_id);
+        assert_eq!(token_client.balance(&user), 1000);
+        assert!(reg_client.is_task_completed(&task_id, &user));
+
+        // One second later the task is expired.
+        e.ledger().set_timestamp(2001);
+        let user2 = Address::generate(&e);
+        let proof_cid2 = String::from_str(&e, "QmAfterExpiry");
+        engine_client.submit_proof(&oracle, &user2, &task_id, &proof_cid2);
+        let result = engine_client.try_approve_proof(&oracle, &user2, &task_id, &1000);
+        assert!(result.is_err());
     }
 
     #[test]

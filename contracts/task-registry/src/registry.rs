@@ -318,6 +318,9 @@ impl RegistryContract {
         if task.status != TaskStatus::Active {
             panic!("registry: task is not active");
         }
+        // Semantics: a task is live when expires_at >= now (i.e. it expires
+        // only after the timestamp strictly exceeds expires_at). This must
+        // match reward_engine::require_active_task exactly.
         if task.expires_at < e.ledger().timestamp() {
             panic!("registry: task expired");
         }
@@ -1052,6 +1055,33 @@ mod test {
 
         e.ledger().set_timestamp(3000);
         client.complete_task(&admin, &task_id, &user);
+    }
+
+    #[test]
+    fn test_complete_task_at_exact_expiry() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let user = Address::generate(&e);
+
+        e.ledger().set_timestamp(1000);
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            1000,
+        );
+
+        // expires_at == 1000 + 1000 == 2000. At timestamp 2000 the task
+        // is still live (strict < semantics: expired only when timestamp
+        // strictly exceeds expires_at).
+        e.ledger().set_timestamp(2000);
+        client.complete_task(&admin, &task_id, &user);
+
+        let task = client.get_task(&task_id);
+        assert_eq!(task.completions, 1);
+        assert_eq!(task.status, TaskStatus::Completed);
     }
 
     #[test]
