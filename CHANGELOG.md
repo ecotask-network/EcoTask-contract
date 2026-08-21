@@ -11,7 +11,23 @@ package version is bumped.
 
 ## [Unreleased]
 
+### Security
+
+#### `eco-token`, `task-registry`, and `reward-engine`
+
+- Admin rotation now uses a two-step handover. The current admin proposes a
+  successor with `propose_admin`, and the proposed address must authenticate
+  and call `accept_admin` before receiving control. The existing
+  `transfer_admin` entry point remains as a compatibility alias for the
+  proposal step. Successful proposals and acceptances emit
+  `AdminProposedEvent` and `AdminAcceptedEvent`, respectively.
+
 ### Fixed
+
+#### `eco-token`
+
+- **[#67] Prevent self-transfer allowance drain in `transfer_from` and fix storage re-fetch TOCTOU in `spend_allowance`.**
+  `transfer_from` now panics with `"token: cannot transfer to self"` when `from == to`, preventing spenders from burning an owner's allowance without transferring tokens. `spend_allowance` in `storage.rs` now accepts the `&Allowance` struct directly instead of re-fetching from persistent storage with `.unwrap()`, eliminating a potential TOCTOU window.
 
 #### `task-registry`
 
@@ -35,6 +51,21 @@ package version is bumped.
   budget.
 
 ### Added
+
+#### `eco-token`
+
+- **[#41] Added fuzz / property-based arithmetic tests and max supply boundary tests using proptest.**
+- `set_minter` now emits a `MinterUpdatedEvent` (`#[contractevent]`) on
+  every successful minter rotation, containing the `admin` (topic),
+  `previous_minter`, and `new_minter` fields.
+
+
+### Changed
+
+#### `eco-token`
+
+- `set_minter` now panics with `"token: minter must differ from admin"` when
+  the caller attempts to set `minter == admin`, enforcing role separation.
 
 #### `reward-engine`
 

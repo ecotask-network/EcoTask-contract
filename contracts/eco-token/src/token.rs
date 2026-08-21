@@ -70,6 +70,31 @@ pub struct MetadataUpdatedEvent {
     pub decimal: u32,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MinterUpdatedEvent {
+    #[topic]
+    pub admin: Address,
+    pub previous_minter: Address,
+    pub new_minter: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposedEvent {
+    #[topic]
+    pub current_admin: Address,
+    #[topic]
+    pub proposed_admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAcceptedEvent {
+    #[topic]
+    pub new_admin: Address,
+}
+
 #[contract]
 pub struct TokenContract;
 
@@ -359,7 +384,7 @@ impl TokenContract {
     /// # Auth
     ///
     /// Requires authentication from the current admin address.
-    pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+    pub fn propose_admin(e: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
         let stored_admin = storage::read_admin(&e);
         if current_admin != stored_admin {
@@ -368,7 +393,33 @@ impl TokenContract {
         if new_admin == current_admin {
             panic!("token: new admin must be different");
         }
-        storage::write_admin(&e, &new_admin);
+        storage::write_pending_admin(&e, &new_admin);
+        AdminProposedEvent {
+            current_admin,
+            proposed_admin: new_admin,
+        }
+        .publish(&e);
+    }
+
+    pub fn accept_admin(e: Env, pending_admin: Address) {
+        pending_admin.require_auth();
+        let proposed =
+            storage::read_pending_admin(&e).unwrap_or_else(|| panic!("token: no pending admin"));
+        if pending_admin != proposed {
+            panic!("token: unauthorized pending admin");
+        }
+        storage::write_admin(&e, &pending_admin);
+        storage::remove_pending_admin(&e);
+        AdminAcceptedEvent {
+            new_admin: pending_admin,
+        }
+        .publish(&e);
+    }
+
+    // DEPRECATED: use propose_admin. This alias preserves the existing ABI while
+    // requiring the proposed admin to accept before gaining control.
+    pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+        Self::propose_admin(e, current_admin, new_admin);
     }
 
     /// Returns the current minter address.
@@ -400,7 +451,20 @@ impl TokenContract {
         if caller != admin {
             panic!("token: unauthorized");
         }
+        // The minting role must remain separate from the admin role. Allowing
+        // `minter == admin` (the caller here) collapses the role separation the
+        // security model depends on, so reject it explicitly.
+        if new_minter == caller {
+            panic!("token: minter must differ from admin");
+        }
+        let previous_minter = storage::read_minter(&e);
         storage::write_minter(&e, &new_minter);
+        MinterUpdatedEvent {
+            admin,
+            previous_minter,
+            new_minter,
+        }
+        .publish(&e);
     }
 
     /// Burns tokens from an address, reducing the total supply.
@@ -558,6 +622,7 @@ impl TokenContract {
     /// # Panics
     ///
     /// * Panics if `amount <= 0`
+    /// * Panics if `from == to`
     /// * Panics if no allowance exists or it has expired
     /// * Panics if the allowance is insufficient for the transfer amount
     /// * Panics if `from` has insufficient balance
@@ -570,6 +635,10 @@ impl TokenContract {
 
         if amount <= 0 {
             panic!("token: amount must be positive");
+        }
+
+        if from == to {
+            panic!("token: cannot transfer to self");
         }
 
         let allowance = match storage::read_allowance(&e, &from, &spender) {
@@ -586,7 +655,7 @@ impl TokenContract {
             panic!("token: insufficient allowance");
         }
 
-        storage::spend_allowance(&e, &from, &spender, amount);
+        storage::spend_allowance(&e, &from, &spender, &allowance, amount);
 
         let from_balance = storage::read_balance(&e, &from);
         if from_balance < amount {
@@ -618,6 +687,9 @@ impl TokenContract {
 
 #[cfg(test)]
 mod test {
+    extern crate std;
+    use std::format;
+
     use crate::{TokenContract, TokenContractClient};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::testutils::Ledger as _;
@@ -813,6 +885,70 @@ mod test {
     }
 
     #[test]
+    fn test_set_minter_emits_minter_updated_event() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::vec;
+        use soroban_sdk::{IntoVal, Symbol, Val};
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let minter = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.set_minter(&admin, &minter);
+
+        let events = e.events().all();
+        let topics: soroban_sdk::Vec<Val> = vec![
+            &e,
+            Symbol::new(&e, "minter_updated_event").to_val(),
+            admin.clone().into_val(&e),
+        ];
+        let data: Val = soroban_sdk::Map::<Symbol, Val>::from_array(
+            &e,
+            [
+                (
+                    Symbol::new(&e, "previous_minter"),
+                    admin.clone().into_val(&e),
+                ),
+                (Symbol::new(&e, "new_minter"), minter.clone().into_val(&e)),
+            ],
+        )
+        .into_val(&e);
+
+        assert_eq!(events, vec![&e, (contract_id.clone(), topics, data)]);
+
+        assert_eq!(client.minter(), minter);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: minter must differ from admin")]
+    fn test_set_minter_rejects_admin_as_minter() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        // Setting the minter to the admin itself collapses role separation.
+        client.set_minter(&admin, &admin);
+    }
+
+    #[test]
     #[should_panic(expected = "token: already initialized")]
     fn test_double_initialize_fails() {
         let e = Env::default();
@@ -852,8 +988,67 @@ mod test {
 
         e.mock_all_auths();
         client.transfer_admin(&admin, &new_admin);
-
+        assert_eq!(client.admin(), admin);
+        client.accept_admin(&new_admin);
         assert_eq!(client.admin(), new_admin);
+    }
+
+    #[test]
+    fn test_propose_admin_overwrite() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let first = Address::generate(&e);
+        let second = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+        e.mock_all_auths();
+        client.propose_admin(&admin, &first);
+        client.propose_admin(&admin, &second);
+        client.accept_admin(&second);
+        assert_eq!(client.admin(), second);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: unauthorized pending admin")]
+    fn test_accept_admin_wrong_address() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let pending = Address::generate(&e);
+        let wrong = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+        e.mock_all_auths();
+        client.propose_admin(&admin, &pending);
+        client.accept_admin(&wrong);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: no pending admin")]
+    fn test_accept_admin_without_proposal() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+        e.mock_all_auths();
+        client.accept_admin(&Address::generate(&e));
     }
 
     #[test]
@@ -1082,6 +1277,29 @@ mod test {
         e.mock_all_auths();
         client.mint(&owner, &1000);
         client.transfer_from(&spender, &owner, &recipient, &100);
+    }
+
+    #[test]
+    #[should_panic(expected = "token: cannot transfer to self")]
+    fn test_transfer_from_self_is_rejected() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let owner = Address::generate(&e);
+        let spender = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.mint(&owner, &1000);
+        client.approve(&owner, &spender, &500, &(e.ledger().sequence() + 100));
+        client.transfer_from(&spender, &owner, &owner, &100);
     }
 
     #[test]
@@ -1632,5 +1850,188 @@ mod test {
 
         assert_eq!(client.decimals(), 7);
         assert_eq!(client.decimal(), client.decimals());
+    }
+
+    #[test]
+    fn test_mint_at_i128_max_supply() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let user = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+
+        // Verify default max_supply is i128::MAX
+        assert_eq!(client.max_supply(), i128::MAX);
+
+        // Mint i128::MAX amount (supply + amount == i128::MAX)
+        client.mint(&user, &i128::MAX);
+        assert_eq!(client.balance(&user), i128::MAX);
+        assert_eq!(client.total_supply(), i128::MAX);
+
+        // Minting 1 more token when supply + 1 overflows i128 should fail
+        let res = client.try_mint(&user, &1);
+        assert!(res.is_err());
+
+        // Burn exact balance cleanly
+        client.burn(&user, &i128::MAX);
+        assert_eq!(client.balance(&user), 0);
+        assert_eq!(client.total_supply(), 0);
+
+        // Set max supply at exactly i128::MAX
+        client.set_max_supply(&admin, &i128::MAX);
+        assert_eq!(client.max_supply(), i128::MAX);
+
+        // Minting up to i128::MAX succeeds with explicit cap set
+        client.mint(&user, &i128::MAX);
+        assert_eq!(client.balance(&user), i128::MAX);
+        assert_eq!(client.total_supply(), i128::MAX);
+
+        // Minting past cap panics via expect
+        let res_cap = client.try_mint(&user, &1);
+        assert!(res_cap.is_err());
+    }
+
+    #[test]
+    fn test_transfer_to_balance_overflow_boundary() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let from = Address::generate(&e);
+        let to = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+
+        // Set up `to` balance at i128::MAX - 1 and `from` balance at 2 inside contract context
+        e.as_contract(&contract_id, || {
+            crate::storage::write_balance(&e, &to, i128::MAX - 1);
+            crate::storage::write_supply(&e, i128::MAX - 1);
+            crate::storage::write_balance(&e, &from, 2);
+        });
+
+        // Transfer 2 to `to` where `to` balance is i128::MAX - 1 and amount is 2.
+        // Should overflow `to` balance and panic via expect("balance overflow").
+        let res = client.try_transfer(&from, &to, &2);
+        assert!(res.is_err());
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20))]
+
+        #[test]
+        fn proptest_mint_below_cap(amount in 1..=i128::MAX) {
+            let e = Env::default();
+            let admin = Address::generate(&e);
+            let user = Address::generate(&e);
+            let contract_id = e.register(TokenContract, ());
+            let client = TokenContractClient::new(&e, &contract_id);
+
+            client.initialize(
+                &admin,
+                &String::from_str(&e, "ECO"),
+                &String::from_str(&e, "ECO"),
+                &7,
+            );
+
+            e.mock_all_auths();
+
+            // mint with random amount in [1, i128::MAX] never panics when supply remains below cap
+            client.mint(&user, &amount);
+            prop_assert_eq!(client.balance(&user), amount);
+            prop_assert_eq!(client.total_supply(), amount);
+        }
+
+        #[test]
+        fn proptest_transfer_preserves_total_supply(
+            mint_amount in 1..=i128::MAX,
+            transfer_amount in 1..=i128::MAX,
+        ) {
+            let e = Env::default();
+            let admin = Address::generate(&e);
+            let from = Address::generate(&e);
+            let to = Address::generate(&e);
+            let contract_id = e.register(TokenContract, ());
+            let client = TokenContractClient::new(&e, &contract_id);
+
+            client.initialize(
+                &admin,
+                &String::from_str(&e, "ECO"),
+                &String::from_str(&e, "ECO"),
+                &7,
+            );
+
+            e.mock_all_auths();
+            client.mint(&from, &mint_amount);
+
+            if transfer_amount <= mint_amount {
+                let res = client.try_transfer(&from, &to, &transfer_amount);
+                prop_assert!(res.is_ok());
+                prop_assert_eq!(client.balance(&from), mint_amount - transfer_amount);
+                prop_assert_eq!(client.balance(&to), transfer_amount);
+                // Total supply MUST be preserved
+                prop_assert_eq!(client.total_supply(), mint_amount);
+            } else {
+                let res = client.try_transfer(&from, &to, &transfer_amount);
+                prop_assert!(res.is_err());
+                prop_assert_eq!(client.balance(&from), mint_amount);
+                prop_assert_eq!(client.total_supply(), mint_amount);
+            }
+        }
+
+        #[test]
+        fn proptest_burn_preserves_total_supply(
+            mint_amount in 1..=i128::MAX,
+            burn_amount in 1..=i128::MAX,
+        ) {
+            let e = Env::default();
+            let admin = Address::generate(&e);
+            let user = Address::generate(&e);
+            let contract_id = e.register(TokenContract, ());
+            let client = TokenContractClient::new(&e, &contract_id);
+
+            client.initialize(
+                &admin,
+                &String::from_str(&e, "ECO"),
+                &String::from_str(&e, "ECO"),
+                &7,
+            );
+
+            e.mock_all_auths();
+            client.mint(&user, &mint_amount);
+
+            if burn_amount <= mint_amount {
+                let res = client.try_burn(&user, &burn_amount);
+                prop_assert!(res.is_ok());
+                prop_assert_eq!(client.balance(&user), mint_amount - burn_amount);
+                prop_assert_eq!(client.total_supply(), mint_amount - burn_amount);
+                if burn_amount == mint_amount {
+                    prop_assert_eq!(client.balance(&user), 0);
+                    prop_assert_eq!(client.total_supply(), 0);
+                }
+            } else {
+                let res = client.try_burn(&user, &burn_amount);
+                prop_assert!(res.is_err());
+                prop_assert_eq!(client.balance(&user), mint_amount);
+                prop_assert_eq!(client.total_supply(), mint_amount);
+            }
+        }
     }
 }

@@ -45,6 +45,7 @@ pub enum DataKey {
     Paused,
     UserCooldown,
     LastRewardLedger(Address),
+    PendingAdmin,
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +96,18 @@ pub fn read_admin(e: &Env) -> Address {
 pub fn has_admin(e: &Env) -> bool {
     let key = DataKey::Admin;
     e.storage().instance().has(&key)
+}
+
+pub fn write_pending_admin(e: &Env, admin: &Address) {
+    e.storage().instance().set(&DataKey::PendingAdmin, admin);
+}
+
+pub fn read_pending_admin(e: &Env) -> Option<Address> {
+    e.storage().instance().get(&DataKey::PendingAdmin)
+}
+
+pub fn remove_pending_admin(e: &Env) {
+    e.storage().instance().remove(&DataKey::PendingAdmin);
 }
 
 /// Writes the token contract address to instance storage.
