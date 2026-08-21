@@ -1157,8 +1157,7 @@ mod test {
         let (e, admin, client) = setup();
         e.mock_all_auths();
 
-        let task_type =
-            String::from_str(&e, &"a".repeat(super::MAX_TASK_TYPE_LEN as usize + 1));
+        let task_type = String::from_str(&e, &"a".repeat(super::MAX_TASK_TYPE_LEN as usize + 1));
         let loc_hash: BytesN<32> = BytesN::random(&e);
         client.create_task(
             &admin,
