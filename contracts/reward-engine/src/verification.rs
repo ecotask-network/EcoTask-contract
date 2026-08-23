@@ -1,9 +1,44 @@
 use crate::storage;
 use soroban_sdk::{
-    contract, contractevent, contractimpl, vec, Address, BytesN, Env, IntoVal, String, Symbol, Val,
+    contract, contractevent, contractimpl, contracttype, vec, Address, BytesN, Env, IntoVal,
+    String, Symbol, Val,
 };
 pub use storage::{Verification, VerificationStatus};
-use task_registry::{Task, TaskStatus};
+
+/// Mirror of `task_registry::TaskStatus` used to decode `get_task` results.
+///
+/// The reward-engine deliberately does not link the task-registry crate (see
+/// Cargo.toml): its `#[contractimpl]` exports would collide with this
+/// contract's own WASM exports. Soroban `#[contracttype]` values are encoded
+/// by variant/field order, not names, so a local mirror with the identical
+/// shape deserializes the registry's values transparently. Keep the variant
+/// order in sync with `task-registry/src/storage.rs`.
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub enum TaskStatus {
+    Active,
+    Completed,
+    Expired,
+    Cancelled,
+}
+
+/// Mirror of `task_registry::Task` — see `TaskStatus` above for why this
+/// exists. Keep the field order and types in sync with
+/// `task-registry/src/storage.rs`; the field names are for readability only.
+#[derive(Clone, Debug)]
+#[contracttype]
+pub struct Task {
+    pub id: u64,
+    pub creator: Address,
+    pub task_type: String,
+    pub location_hash: BytesN<32>,
+    pub reward_amount: i128,
+    pub max_completions: u32,
+    pub completions: u32,
+    pub status: TaskStatus,
+    pub created_at: u64,
+    pub expires_at: u64,
+}
 
 /// Maximum allowed length for a proof CID string (covers CIDv1 + multihash).
 const MAX_CID_LEN: u32 = 128;
@@ -36,7 +71,7 @@ fn require_active_task(e: &Env, task_id: u64) -> Task {
     }
     // Semantics: a task is live when expires_at >= now (i.e. it expires
     // only after the timestamp strictly exceeds expires_at). This must
-    // match task_registry::registry::complete_task exactly.
+    // match the registry's complete_task exactly.
     if task.expires_at < e.ledger().timestamp() {
         panic!("engine: task has expired");
     }
@@ -223,6 +258,93 @@ fn collect_pending(e: &Env, cursor: u32, limit: u32) -> soroban_sdk::Vec<Verific
         idx += 1;
     }
     result
+}
+
+/// Shared payout tail for `approve_proof` and the approve path of
+/// `resolve_dispute`.
+///
+/// # Ordering (atomicity) rationale
+///
+/// This function follows the pattern *read-all → validate-all → call
+/// external contracts → write local state*. Every validation (reward bounds,
+/// task budget, free completion slot, user cooldown) runs before any storage
+/// mutation in this contract, and the `Approved` verification record is only
+/// written *after* both `complete_task` and `mint` have returned.
+///
+/// Soroban rolls back the entire invocation tree when a sub-invocation
+/// panics, but the engine never relies on that: by deferring the local write
+/// until after the external calls succeed, a panic in either call can never
+/// leave an orphaned `Approved` record, a consumed completion slot, or a
+/// `total_paid`/token-supply discrepancy — regardless of sub-call rollback
+/// semantics. The registry's own double-claim and max-completions guards
+/// remain the authoritative checks; the `completions < max_completions`
+/// check here is defensive pre-validation that fails fast before any state
+/// is touched (e.g. two oracles racing on a task's last completion slot).
+fn approve_and_pay(
+    e: &Env,
+    user: &Address,
+    task_id: u64,
+    reward_amount: i128,
+    verification: &mut Verification,
+) {
+    if reward_amount <= 0 {
+        panic!("engine: reward amount must be positive");
+    }
+    if let Some(min) = storage::read_min_reward(e) {
+        if reward_amount < min {
+            panic!("engine: reward below minimum");
+        }
+    }
+    if let Some(max) = storage::read_max_reward(e) {
+        if reward_amount > max {
+            panic!("engine: reward exceeds maximum");
+        }
+    }
+
+    let task = require_active_task(e, task_id);
+    if reward_amount > task.reward_amount {
+        panic!("engine: reward exceeds task budget");
+    }
+    // Defensive pre-validation mirroring registry::complete_task: never
+    // consume a completion slot (or pay out) once the task's completion
+    // budget is exhausted. The authoritative guard lives in the registry;
+    // this check fails fast so no local state is written first.
+    if task.completions >= task.max_completions {
+        panic!("engine: task max completions reached");
+    }
+
+    require_cooldown_elapsed(e, user);
+
+    // Cross-contract calls first — see the doc comment above for why the
+    // local state mutations are deferred until both have succeeded.
+    let registry_id = storage::read_registry(e);
+    e.invoke_contract::<Val>(
+        &registry_id,
+        &Symbol::new(e, "complete_task"),
+        vec![
+            &e,
+            e.current_contract_address().into_val(e),
+            task_id.into_val(e),
+            user.clone().into_val(e),
+        ],
+    );
+
+    let token_id = storage::read_token(e);
+    e.invoke_contract::<Val>(
+        &token_id,
+        &Symbol::new(e, "mint"),
+        vec![&e, user.clone().into_val(e), reward_amount.into_val(e)],
+    );
+
+    // Both external calls succeeded: now record the payout locally.
+    verification.status = VerificationStatus::Approved;
+    verification.reward_amount = reward_amount;
+    verification.resolved_at = Some(e.ledger().timestamp());
+    storage::write_verification(e, task_id, user, verification);
+    storage::remove_verification_key(e, task_id, user);
+
+    storage::add_total_paid(e, reward_amount);
+    record_reward_ledger(e, user);
 }
 
 #[contractimpl]
@@ -593,6 +715,7 @@ impl RewardEngine {
     /// * Panics if `reward_amount` exceeds the maximum reward bound (if set)
     /// * Panics if the task is not active or has expired (via require_active_task)
     /// * Panics if `reward_amount` exceeds the task's declared reward budget
+    /// * Panics if the task has reached its max completions
     ///
     /// # Auth
     ///
@@ -617,51 +740,13 @@ impl RewardEngine {
             panic!("engine: verification is not pending");
         }
 
-        if reward_amount <= 0 {
-            panic!("engine: reward amount must be positive");
-        }
-        if let Some(min) = storage::read_min_reward(&e) {
-            if reward_amount < min {
-                panic!("engine: reward below minimum");
-            }
-        }
-        if let Some(max) = storage::read_max_reward(&e) {
-            if reward_amount > max {
-                panic!("engine: reward exceeds maximum");
-            }
-        }
-
-        let task = require_active_task(&e, task_id);
-        if reward_amount > task.reward_amount {
-            panic!("engine: reward exceeds task budget");
-        }
-
-        require_cooldown_elapsed(&e, &user);
-
-        verification.status = VerificationStatus::Approved;
-        verification.reward_amount = reward_amount;
-        verification.resolved_at = Some(e.ledger().timestamp());
-        storage::write_verification(&e, task_id, &user, &verification);
-        storage::remove_verification_key(&e, task_id, &user);
-
-        let registry_id = storage::read_registry(&e);
-        e.invoke_contract::<Val>(
-            &registry_id,
-            &Symbol::new(&e, "complete_task"),
-            vec![
-                &e,
-                e.current_contract_address().into_val(&e),
-                task_id.into_val(&e),
-                user.clone().into_val(&e),
-            ],
-        );
-
-        let token_id = storage::read_token(&e);
-        e.invoke_contract::<Val>(
-            &token_id,
-            &Symbol::new(&e, "mint"),
-            vec![&e, user.clone().into_val(&e), reward_amount.into_val(&e)],
-        );
+        // See `approve_and_pay` for the ordering that keeps this payout
+        // atomic: all validation runs first, then the cross-contract calls
+        // (complete_task, mint), and only then is the verification marked
+        // Approved locally. A panic in any sub-call therefore leaves no
+        // orphaned Approved record, consumed completion slot, or total_paid
+        // drift.
+        approve_and_pay(&e, &user, task_id, reward_amount, &mut verification);
 
         RewardPaidEvent {
             oracle,
@@ -670,9 +755,6 @@ impl RewardEngine {
             amount: reward_amount,
         }
         .publish(&e);
-
-        storage::add_total_paid(&e, reward_amount);
-        record_reward_ledger(&e, &user);
     }
 
     /// Rejects a proof without payout.
@@ -788,6 +870,7 @@ impl RewardEngine {
     /// * Panics if `approve` is true and `reward_amount` exceeds the maximum (if set)
     /// * Panics if `approve` is true and the task is not active or has expired
     /// * Panics if `approve` is true and `reward_amount` exceeds the task's budget
+    /// * Panics if `approve` is true and the task has reached its max completions
     ///
     /// # Auth
     ///
@@ -814,53 +897,11 @@ impl RewardEngine {
         }
 
         if approve {
-            if reward_amount <= 0 {
-                panic!("engine: reward amount must be positive");
-            }
-            if let Some(min) = storage::read_min_reward(&e) {
-                if reward_amount < min {
-                    panic!("engine: reward below minimum");
-                }
-            }
-            if let Some(max) = storage::read_max_reward(&e) {
-                if reward_amount > max {
-                    panic!("engine: reward exceeds maximum");
-                }
-            }
-
-            let task = require_active_task(&e, task_id);
-            if reward_amount > task.reward_amount {
-                panic!("engine: reward exceeds task budget");
-            }
-
-            require_cooldown_elapsed(&e, &user);
-
-            verification.status = VerificationStatus::Approved;
-            verification.reward_amount = reward_amount;
-            verification.resolved_at = Some(e.ledger().timestamp());
-            storage::write_verification(&e, task_id, &user, &verification);
-
-            let registry_id = storage::read_registry(&e);
-            e.invoke_contract::<Val>(
-                &registry_id,
-                &Symbol::new(&e, "complete_task"),
-                vec![
-                    &e,
-                    e.current_contract_address().into_val(&e),
-                    task_id.into_val(&e),
-                    user.clone().into_val(&e),
-                ],
-            );
-
-            let token_id = storage::read_token(&e);
-            e.invoke_contract::<Val>(
-                &token_id,
-                &Symbol::new(&e, "mint"),
-                vec![&e, user.clone().into_val(&e), reward_amount.into_val(&e)],
-            );
-
-            storage::add_total_paid(&e, reward_amount);
-            record_reward_ledger(&e, &user);
+            // Same atomic ordering as `approve_proof`: validation, then the
+            // cross-contract calls, then the local Approved write (see
+            // `approve_and_pay`). A mint failure here leaves the verification
+            // Disputed — not Approved — with no completed task or payout.
+            approve_and_pay(&e, &user, task_id, reward_amount, &mut verification);
         } else {
             verification.status = VerificationStatus::Rejected;
             verification.resolved_at = Some(e.ledger().timestamp());

@@ -29,6 +29,35 @@ package version is bumped.
 - **[#67] Prevent self-transfer allowance drain in `transfer_from` and fix storage re-fetch TOCTOU in `spend_allowance`.**
   `transfer_from` now panics with `"token: cannot transfer to self"` when `from == to`, preventing spenders from burning an owner's allowance without transferring tokens. `spend_allowance` in `storage.rs` now accepts the `&Allowance` struct directly instead of re-fetching from persistent storage with `.unwrap()`, eliminating a potential TOCTOU window.
 
+#### `reward-engine`
+
+- **[#71] Make `approve_proof` and the approve path of `resolve_dispute`
+  atomic across contracts.** The verification record was previously written
+  as `Approved` *before* the cross-contract `complete_task` and `mint` calls.
+  A panic in either sub-invocation (e.g. the token supply cap) could leave
+  the verification stuck in `Approved` with no payout, a consumed task
+  completion slot, and a `total_paid`/supply discrepancy. Both functions now
+  share an `approve_and_pay` tail that validates everything (including a
+  defensive `completions < max_completions` pre-check) before any storage
+  write, calls out to the registry and token only after validation, and
+  writes the local `Approved` state only after both sub-calls succeed.
+
+Error strings:
+
+- `engine: task max completions reached`
+
+- **[#72] Fix `reward-engine` WASM build: remove cross-contract crate
+  dependencies.** The `eco-token` and `task-registry` crates are now
+  dev-only dependencies. Their `#[contractimpl]` blocks emit `#[no_mangle]`
+  exports, so linking either rlib into the reward-engine WASM binary
+  produced duplicate symbols (`accept_admin`, `propose_admin`,
+  `transfer_admin`) and `cargo build --target wasm32v1-none --release`
+  failed. Production code already calls both contracts via raw
+  `invoke_contract`; the registry's `Task`/`TaskStatus` are now decoded
+  through local `#[contracttype]` mirror types in `verification.rs` that
+  match the registry's wire format (field/variant order). Public contract
+  ABI and storage layout are unchanged.
+
 #### `task-registry`
 
 - **[#52] Unbounded `CreatorTasks` Vec replaced with indexed persistent

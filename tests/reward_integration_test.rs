@@ -370,6 +370,117 @@ fn test_supply_cap_blocks_engine_mint() {
 }
 
 #[test]
+fn test_partial_failure_leaves_no_orphan_state() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let token_id = deploy_token(&e, &admin);
+    let reg_id = deploy_registry(&e, &admin);
+    let engine_id = deploy_engine(&e, &admin, &token_id, &reg_id, &oracle);
+
+    let engine_client = reward_engine::RewardEngineClient::new(&e, &engine_id);
+    let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+    let token_client = eco_token::TokenContractClient::new(&e, &token_id);
+
+    // Cap the token below the reward so the mint sub-call panics.
+    token_client.set_max_supply(&admin, &400);
+
+    let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+    let task_id = reg_client.create_task(
+        &admin,
+        &String::from_str(&e, "tree-planting"),
+        &loc_hash,
+        &500,
+        &1,
+        &(e.ledger().timestamp() + 10000),
+    );
+
+    let proof = String::from_str(&e, "QmOrphan");
+    engine_client.submit_proof(&oracle, &user, &task_id, &proof);
+
+    let result = engine_client.try_approve_proof(&oracle, &user, &task_id, &500);
+    assert!(result.is_err());
+
+    // No orphaned state: the verification is still Pending (not Approved),
+    // the task is not marked completed, and nothing was paid out.
+    let v = engine_client.get_verification(&task_id, &user);
+    assert_eq!(v.status, reward_engine::VerificationStatus::Pending);
+    assert!(!reg_client.is_task_completed(&task_id, &user));
+    assert_eq!(engine_client.total_paid(), 0);
+    assert_eq!(token_client.balance(&user), 0);
+
+    // The proof is not stuck: raising the cap unlocks the same payout.
+    token_client.set_max_supply(&admin, &1000);
+    engine_client.approve_proof(&oracle, &user, &task_id, &500);
+
+    let v = engine_client.get_verification(&task_id, &user);
+    assert_eq!(v.status, reward_engine::VerificationStatus::Approved);
+    assert_eq!(token_client.balance(&user), 500);
+    assert_eq!(engine_client.total_paid(), 500);
+    assert!(reg_client.is_task_completed(&task_id, &user));
+}
+
+#[test]
+fn test_resolve_dispute_mint_failure_leaves_no_orphan_state() {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let user = Address::generate(&e);
+
+    let token_id = deploy_token(&e, &admin);
+    let reg_id = deploy_registry(&e, &admin);
+    let engine_id = deploy_engine(&e, &admin, &token_id, &reg_id, &oracle);
+
+    let engine_client = reward_engine::RewardEngineClient::new(&e, &engine_id);
+    let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+    let token_client = eco_token::TokenContractClient::new(&e, &token_id);
+
+    // Cap the token below the reward so the mint sub-call panics.
+    token_client.set_max_supply(&admin, &400);
+
+    let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+    let task_id = reg_client.create_task(
+        &admin,
+        &String::from_str(&e, "ocean-cleanup"),
+        &loc_hash,
+        &500,
+        &1,
+        &(e.ledger().timestamp() + 10000),
+    );
+
+    let proof = String::from_str(&e, "QmOrphanDispute");
+    engine_client.submit_proof(&oracle, &user, &task_id, &proof);
+    engine_client.dispute_proof(&admin, &user, &task_id);
+
+    let result = engine_client.try_resolve_dispute(&admin, &user, &task_id, &true, &500);
+    assert!(result.is_err());
+
+    // No orphaned state: the verification is still Disputed (not Approved),
+    // the task is not marked completed, and nothing was paid out.
+    let v = engine_client.get_verification(&task_id, &user);
+    assert_eq!(v.status, reward_engine::VerificationStatus::Disputed);
+    assert!(!reg_client.is_task_completed(&task_id, &user));
+    assert_eq!(engine_client.total_paid(), 0);
+    assert_eq!(token_client.balance(&user), 0);
+
+    // The disputed proof is not stuck: raising the cap unlocks the payout.
+    token_client.set_max_supply(&admin, &1000);
+    engine_client.resolve_dispute(&admin, &user, &task_id, &true, &500);
+
+    let v = engine_client.get_verification(&task_id, &user);
+    assert_eq!(v.status, reward_engine::VerificationStatus::Approved);
+    assert_eq!(token_client.balance(&user), 500);
+    assert_eq!(engine_client.total_paid(), 500);
+    assert!(reg_client.is_task_completed(&task_id, &user));
+}
+
+#[test]
 fn test_supply_cap_counts_cumulative_emissions() {
     let e = Env::default();
     e.mock_all_auths_allowing_non_root_auth();
