@@ -468,7 +468,18 @@ impl RewardEngine {
     pub fn set_token(e: Env, caller: Address, new_token: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
+        let current_token = storage::read_token(&e);
+        if new_token == current_token {
+            panic!("engine: new token cannot be the same as current");
+        }
+        let _: u32 = e.invoke_contract(&new_token, &Symbol::new(&e, "decimals"), vec![&e]);
         storage::write_token(&e, &new_token);
+        TokenUpdatedEvent {
+            admin: caller,
+            previous_token: current_token,
+            new_token,
+        }
+        .publish(&e);
     }
 
     /// Sets the registry contract address.
@@ -488,7 +499,25 @@ impl RewardEngine {
     pub fn set_registry(e: Env, caller: Address, new_registry: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
+        let current_registry = storage::read_registry(&e);
+        if new_registry == current_registry {
+            panic!("engine: new registry cannot be the same as current");
+        }
+        let is_sponsor: bool = e.invoke_contract(
+            &new_registry,
+            &Symbol::new(&e, "is_sponsor"),
+            vec![&e, e.current_contract_address().into_val(&e)],
+        );
+        if !is_sponsor {
+            panic!("engine: engine is not a sponsor on the new registry");
+        }
         storage::write_registry(&e, &new_registry);
+        RegistryUpdatedEvent {
+            admin: caller,
+            previous_registry: current_registry,
+            new_registry,
+        }
+        .publish(&e);
     }
 
     /// Sets platform-wide reward bounds for all payouts.
@@ -1632,7 +1661,18 @@ mod test {
         let (e, admin, _oracle, _user, _task_id, client) = setup();
         e.mock_all_auths_allowing_non_root_auth();
 
-        let new_token = Address::generate(&e);
+        let new_token = deploy_token(&e, &admin);
+        client.set_token(&admin, &new_token);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: new token cannot be the same as current")]
+    fn test_set_token_same_address() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let new_token = deploy_token(&e, &admin);
+        client.set_token(&admin, &new_token);
         client.set_token(&admin, &new_token);
     }
 
@@ -1652,7 +1692,32 @@ mod test {
         let (e, admin, _oracle, _user, _task_id, client) = setup();
         e.mock_all_auths_allowing_non_root_auth();
 
-        let new_registry = Address::generate(&e);
+        let new_registry = deploy_registry(&e, &admin);
+        let reg_client = task_registry::RegistryContractClient::new(&e, &new_registry);
+        reg_client.add_sponsor(&admin, &client.address);
+        client.set_registry(&admin, &new_registry);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: new registry cannot be the same as current")]
+    fn test_set_registry_same_address() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let new_registry = deploy_registry(&e, &admin);
+        let reg_client = task_registry::RegistryContractClient::new(&e, &new_registry);
+        reg_client.add_sponsor(&admin, &client.address);
+        client.set_registry(&admin, &new_registry);
+        client.set_registry(&admin, &new_registry);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: engine is not a sponsor on the new registry")]
+    fn test_set_registry_not_sponsor() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let new_registry = deploy_registry(&e, &admin);
         client.set_registry(&admin, &new_registry);
     }
 

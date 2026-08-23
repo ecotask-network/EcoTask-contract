@@ -212,7 +212,7 @@ Submitted (Pending) ──► Approved (mints ECO)
 | `is_paused() → bool` | — | Check if engine is paused |
 | `set_oracle(caller, new_oracle)` | admin | Replace the oracle address |
 | `set_token(caller, new_token)` | admin | Replace the token address |
-| `set_registry(caller, new_registry)` | admin | Replace the registry address |
+| `set_registry(caller, new_registry)` | admin | Replace the registry address. **Note:** The caller must ensure the engine is re-added as a sponsor on the new registry. |
 | `set_reward_range(caller, min_reward, max_reward)` | admin | Set platform-wide reward bounds |
 | `transfer_admin(current_admin, new_admin)` | `current_admin` | Transfer admin role |
 
