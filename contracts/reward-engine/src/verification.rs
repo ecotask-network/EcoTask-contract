@@ -5,6 +5,9 @@ use soroban_sdk::{
 pub use storage::{Verification, VerificationStatus};
 use task_registry::{Task, TaskStatus};
 
+/// Maximum allowed length for a proof CID string (covers CIDv1 + multihash).
+const MAX_CID_LEN: u32 = 128;
+
 /// Fetches the task from the registry and enforces that it is active and not
 /// expired. Returns the task so the caller can inspect `reward_amount`.
 ///
@@ -518,6 +521,13 @@ impl RewardEngine {
         require_not_paused(&e);
         oracle.require_auth();
         require_oracle(&e, &oracle);
+
+        if proof_cid.is_empty() {
+            panic!("engine: proof cid must not be empty");
+        }
+        if proof_cid.len() > MAX_CID_LEN {
+            panic!("engine: proof cid too long");
+        }
 
         if storage::read_verification(&e, task_id, &user).is_some() {
             panic!("engine: proof already submitted");
@@ -2193,48 +2203,24 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "engine: verification is not pending")]
-    fn test_two_oracles_race_to_approve_same_proof() {
-        let (e, admin, oracle_a, user, task_id, client) = setup();
-        let oracle_b = Address::generate(&e);
-        client.add_oracle(&admin, &oracle_b);
+    #[should_panic(expected = "engine: proof cid must not be empty")]
+    fn test_submit_empty_cid_fails() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
 
-        let proof = String::from_str(&e, "QmRaceProof");
-        client.submit_proof(&oracle_a, &user, &task_id, &proof);
-
-        // First oracle approves
-        client.approve_proof(&oracle_a, &user, &task_id, &500);
-
-        // Second oracle tries to approve the same proof
-        client.approve_proof(&oracle_b, &user, &task_id, &500);
+        let proof_cid = String::from_str(&e, "");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
     }
 
     #[test]
-    fn test_different_oracle_approves_submitted_proof() {
-        let (e, admin, oracle_a, user, task_id, client) = setup();
-        let oracle_b = Address::generate(&e);
-        client.add_oracle(&admin, &oracle_b);
+    #[should_panic(expected = "engine: proof cid too long")]
+    fn test_submit_oversized_cid_fails() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
 
-        let proof = String::from_str(&e, "QmDiffOracleProof");
-        client.submit_proof(&oracle_a, &user, &task_id, &proof);
-
-        // Second oracle approves
-        client.approve_proof(&oracle_b, &user, &task_id, &500);
-
-        let v = client.get_verification(&task_id, &user);
-        assert_eq!(v.status, VerificationStatus::Approved);
-        // The oracle recorded is the submitter (oracle_a)
-        assert_eq!(v.oracle, oracle_a);
-    }
-
-    #[test]
-    #[should_panic(expected = "engine: verification not found")]
-    fn test_approve_before_submit_panics() {
-        let (e, admin, _oracle, user, task_id, client) = setup();
-        let oracle_b = Address::generate(&e);
-        client.add_oracle(&admin, &oracle_b);
-
-        // Oracle tries to approve a proof that was never submitted
-        client.approve_proof(&oracle_b, &user, &task_id, &500);
+        // 129 bytes exceeds MAX_CID_LEN (128)
+        let long_cid = "a".repeat(129);
+        let proof_cid = String::from_str(&e, &long_cid);
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
     }
 }

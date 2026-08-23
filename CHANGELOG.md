@@ -84,6 +84,16 @@ Error strings:
 
 - `engine: user cooldown active`
 
+#### `reward-engine` (proof CID validation)
+
+- `submit_proof` validates `proof_cid` length, rejecting empty or oversized
+  (`> MAX_CID_LEN` bytes) CID strings before hashing/storage.
+
+Error strings:
+
+- `engine: proof cid must not be empty`
+- `engine: proof cid too long`
+
 ## [0.1.0-alpha] - 2026-08-17
 
 This entry records the current source interface as the baseline for future
