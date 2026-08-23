@@ -1,12 +1,29 @@
 use crate::storage;
+use ecotask_types::{Task, TaskStatus};
 use soroban_sdk::{
     contract, contractevent, contractimpl, vec, Address, BytesN, Env, IntoVal, String, Symbol, Val,
 };
 pub use storage::{Verification, VerificationStatus};
-use task_registry::{Task, TaskStatus};
+
+/// Maximum allowed length for a proof CID string (covers CIDv1 + multihash).
+const MAX_CID_LEN: u32 = 128;
 
 /// Fetches the task from the registry and enforces that it is active and not
 /// expired. Returns the task so the caller can inspect `reward_amount`.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `task_id` - The ID of the task to fetch and validate
+///
+/// # Returns
+///
+/// The Task struct if valid.
+///
+/// # Panics
+///
+/// * Panics if the task is not Active
+/// * Panics if the task has expired
 fn require_active_task(e: &Env, task_id: u64) -> Task {
     let registry_id = storage::read_registry(e);
     let task: Task = e.invoke_contract(
@@ -17,6 +34,9 @@ fn require_active_task(e: &Env, task_id: u64) -> Task {
     if task.status != TaskStatus::Active {
         panic!("engine: task is not active");
     }
+    // Semantics: a task is live when expires_at >= now (i.e. it expires
+    // only after the timestamp strictly exceeds expires_at). This must
+    // match the registry's complete_task exactly.
     if task.expires_at < e.ledger().timestamp() {
         panic!("engine: task has expired");
     }
@@ -88,26 +108,32 @@ pub struct OracleRemovedEvent {
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct TokenUpdatedEvent {
+pub struct AdminProposedEvent {
     #[topic]
-    pub admin: Address,
-    pub previous_token: Address,
-    pub new_token: Address,
+    pub current_admin: Address,
+    #[topic]
+    pub proposed_admin: Address,
 }
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RegistryUpdatedEvent {
+pub struct AdminAcceptedEvent {
     #[topic]
-    pub admin: Address,
-    pub previous_registry: Address,
-    pub new_registry: Address,
+    pub new_admin: Address,
 }
 
 #[contract]
 pub struct RewardEngine;
 
 /// Panics if the engine is paused.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+///
+/// # Panics
+///
+/// Panics if the contract is paused.
 fn require_not_paused(e: &Env) {
     if storage::is_paused(e) {
         panic!("engine: contract is paused");
@@ -115,6 +141,15 @@ fn require_not_paused(e: &Env) {
 }
 
 /// Panics unless `addr` is one of the registered oracles.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `addr` - The address to check
+///
+/// # Panics
+///
+/// Panics if the address is not a registered oracle.
 fn require_oracle(e: &Env, addr: &Address) {
     if !storage::is_registered_oracle(e, addr) {
         panic!("engine: unauthorized");
@@ -122,6 +157,15 @@ fn require_oracle(e: &Env, addr: &Address) {
 }
 
 /// Panics unless `addr` is the admin.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `addr` - The address to check
+///
+/// # Panics
+///
+/// Panics if the address is not the admin.
 fn require_admin(e: &Env, addr: &Address) {
     let admin = storage::read_admin(e);
     if addr != &admin {
@@ -129,8 +173,40 @@ fn require_admin(e: &Env, addr: &Address) {
     }
 }
 
+/// Panics if `user` was last rewarded fewer than the configured cooldown
+/// ledgers ago. A cooldown of 0 (the default) disables this check.
+fn require_cooldown_elapsed(e: &Env, user: &Address) {
+    let cooldown = storage::read_user_cooldown(e);
+    if cooldown == 0 {
+        return;
+    }
+    if let Some(last) = storage::read_last_reward_ledger(e, user) {
+        let current_ledger = e.ledger().sequence() as u64;
+        if current_ledger.saturating_sub(last) < cooldown {
+            panic!("engine: user cooldown active");
+        }
+    }
+}
+
+/// Records the ledger at which `user` most recently received a reward, so
+/// future calls to `require_cooldown_elapsed` can rate-limit them.
+fn record_reward_ledger(e: &Env, user: &Address) {
+    let current_ledger = e.ledger().sequence() as u64;
+    storage::write_last_reward_ledger(e, user, current_ledger);
+}
+
 /// Collects up to `limit` pending verifications starting at offset `cursor`
 /// into the full verification log, skipping already-resolved entries.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `cursor` - The starting offset into the verification list
+/// * `limit` - The maximum number of verifications to return
+///
+/// # Returns
+///
+/// A vector of pending verification records.
 fn collect_pending(e: &Env, cursor: u32, limit: u32) -> soroban_sdk::Vec<Verification> {
     let keys = storage::read_verification_keys(e);
     let mut result: soroban_sdk::Vec<Verification> = soroban_sdk::Vec::new(e);
@@ -149,8 +225,112 @@ fn collect_pending(e: &Env, cursor: u32, limit: u32) -> soroban_sdk::Vec<Verific
     result
 }
 
+/// Shared payout tail for `approve_proof` and the approve path of
+/// `resolve_dispute`.
+///
+/// # Ordering (atomicity) rationale
+///
+/// This function follows the pattern *read-all → validate-all → call
+/// external contracts → write local state*. Every validation (reward bounds,
+/// task budget, free completion slot, user cooldown) runs before any storage
+/// mutation in this contract, and the `Approved` verification record is only
+/// written *after* both `complete_task` and `mint` have returned.
+///
+/// Soroban rolls back the entire invocation tree when a sub-invocation
+/// panics, but the engine never relies on that: by deferring the local write
+/// until after the external calls succeed, a panic in either call can never
+/// leave an orphaned `Approved` record, a consumed completion slot, or a
+/// `total_paid`/token-supply discrepancy — regardless of sub-call rollback
+/// semantics. The registry's own double-claim and max-completions guards
+/// remain the authoritative checks; the `completions < max_completions`
+/// check here is defensive pre-validation that fails fast before any state
+/// is touched (e.g. two oracles racing on a task's last completion slot).
+fn approve_and_pay(
+    e: &Env,
+    user: &Address,
+    task_id: u64,
+    reward_amount: i128,
+    verification: &mut Verification,
+) {
+    if reward_amount <= 0 {
+        panic!("engine: reward amount must be positive");
+    }
+    if let Some(min) = storage::read_min_reward(e) {
+        if reward_amount < min {
+            panic!("engine: reward below minimum");
+        }
+    }
+    if let Some(max) = storage::read_max_reward(e) {
+        if reward_amount > max {
+            panic!("engine: reward exceeds maximum");
+        }
+    }
+
+    let task = require_active_task(e, task_id);
+    if reward_amount > task.reward_amount {
+        panic!("engine: reward exceeds task budget");
+    }
+    // Defensive pre-validation mirroring registry::complete_task: never
+    // consume a completion slot (or pay out) once the task's completion
+    // budget is exhausted. The authoritative guard lives in the registry;
+    // this check fails fast so no local state is written first.
+    if task.completions >= task.max_completions {
+        panic!("engine: task max completions reached");
+    }
+
+    require_cooldown_elapsed(e, user);
+
+    // Cross-contract calls first — see the doc comment above for why the
+    // local state mutations are deferred until both have succeeded.
+    let registry_id = storage::read_registry(e);
+    e.invoke_contract::<Val>(
+        &registry_id,
+        &Symbol::new(e, "complete_task"),
+        vec![
+            &e,
+            e.current_contract_address().into_val(e),
+            task_id.into_val(e),
+            user.clone().into_val(e),
+        ],
+    );
+
+    let token_id = storage::read_token(e);
+    e.invoke_contract::<Val>(
+        &token_id,
+        &Symbol::new(e, "mint"),
+        vec![&e, user.clone().into_val(e), reward_amount.into_val(e)],
+    );
+
+    // Both external calls succeeded: now record the payout locally.
+    verification.status = VerificationStatus::Approved;
+    verification.reward_amount = reward_amount;
+    verification.resolved_at = Some(e.ledger().timestamp());
+    storage::write_verification(e, task_id, user, verification);
+    storage::remove_verification_key(e, task_id, user);
+
+    storage::add_total_paid(e, reward_amount);
+    record_reward_ledger(e, user);
+}
+
 #[contractimpl]
 impl RewardEngine {
+    /// Initializes the reward engine contract with core addresses.
+    ///
+    /// # Arguments
+    ///
+    /// * `admin` - The initial administrator address
+    /// * `token` - The address of the token contract
+    /// * `registry` - The address of the task registry contract
+    /// * `oracle` - The initial oracle address
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the contract has already been initialized
+    /// * Panics if `admin == oracle` (separation of duties requirement)
+    ///
+    /// # Auth
+    ///
+    /// No authentication required. Can only be called once during deployment.
     pub fn initialize(e: Env, admin: Address, token: Address, registry: Address, oracle: Address) {
         if storage::has_admin(&e) {
             panic!("engine: already initialized");
@@ -164,6 +344,21 @@ impl RewardEngine {
         storage::write_oracles(&e, &vec![&e, oracle]);
     }
 
+    /// Replaces the entire oracle roster with a single oracle.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `new_oracle` - The new oracle address to set
+    ///
+    /// # Panics
+    ///
+    /// * Panics if caller is not the admin
+    /// * Panics if `new_oracle == caller` (oracle must differ from admin)
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn set_oracle(e: Env, caller: Address, new_oracle: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
@@ -175,6 +370,21 @@ impl RewardEngine {
 
     /// Registers an additional oracle. Any registered oracle may submit,
     /// approve, or reject proofs.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `new_oracle` - The new oracle address to add
+    ///
+    /// # Panics
+    ///
+    /// * Panics if caller is not the admin
+    /// * Panics if `new_oracle == admin` (oracle must differ from admin)
+    /// * Panics if `new_oracle` is already registered
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn add_oracle(e: Env, caller: Address, new_oracle: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
@@ -191,6 +401,21 @@ impl RewardEngine {
 
     /// Removes a registered oracle. The last remaining oracle cannot be
     /// removed, so the engine always keeps at least one active oracle.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `oracle` - The oracle address to remove
+    ///
+    /// # Panics
+    ///
+    /// * Panics if caller is not the admin
+    /// * Panics if `oracle` is not registered
+    /// * Panics if `oracle` is the last remaining oracle
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn remove_oracle(e: Env, caller: Address, oracle: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
@@ -205,15 +430,41 @@ impl RewardEngine {
     }
 
     /// Returns the full roster of registered oracles.
+    ///
+    /// # Returns
+    ///
+    /// A vector of all registered oracle addresses.
     pub fn get_oracles(e: Env) -> soroban_sdk::Vec<Address> {
         storage::read_oracles(&e)
     }
 
     /// Returns true if `addr` is a registered oracle.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr` - The address to check
+    ///
+    /// # Returns
+    ///
+    /// true if the address is a registered oracle, false otherwise.
     pub fn is_oracle(e: Env, addr: Address) -> bool {
         storage::is_registered_oracle(&e, &addr)
     }
 
+    /// Sets the token contract address.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `new_token` - The new token contract address
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn set_token(e: Env, caller: Address, new_token: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
@@ -231,6 +482,20 @@ impl RewardEngine {
         .publish(&e);
     }
 
+    /// Sets the registry contract address.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `new_registry` - The new registry contract address
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn set_registry(e: Env, caller: Address, new_registry: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
@@ -255,6 +520,23 @@ impl RewardEngine {
         .publish(&e);
     }
 
+    /// Sets platform-wide reward bounds for all payouts.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `min_reward` - The minimum allowed reward amount (must be positive)
+    /// * `max_reward` - The maximum allowed reward amount (must be >= min_reward)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if caller is not the admin
+    /// * Panics if `min_reward <= 0`
+    /// * Panics if `max_reward < min_reward`
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn set_reward_range(e: Env, caller: Address, min_reward: i128, max_reward: i128) {
         caller.require_auth();
         require_admin(&e, &caller);
@@ -267,26 +549,101 @@ impl RewardEngine {
         storage::write_reward_range(&e, min_reward, max_reward);
     }
 
+    /// Pauses the contract, blocking all proof operations.
+    ///
+    /// This is an emergency function to halt operations in case of an exploit.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    ///
+    /// # Panics
+    ///
+    ///     /// Sets the minimum number of ledgers a user must wait between reward
+    /// approvals. 0 disables the cooldown.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
+    pub fn set_user_cooldown(e: Env, caller: Address, min_ledgers_between_rewards: u64) {
+        caller.require_auth();
+        require_admin(&e, &caller);
+        storage::write_user_cooldown(&e, min_ledgers_between_rewards);
+    }
+
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn pause(e: Env, caller: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
         storage::set_paused(&e, true);
     }
 
+    /// Resumes contract operations after a pause.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn unpause(e: Env, caller: Address) {
         caller.require_auth();
         require_admin(&e, &caller);
         storage::set_paused(&e, false);
     }
 
+    /// Checks if the contract is currently paused.
+    ///
+    /// # Returns
+    ///
+    /// true if the contract is paused, false otherwise.
     pub fn is_paused(e: Env) -> bool {
         storage::is_paused(&e)
     }
 
+    /// Submits a proof of task completion for verification.
+    ///
+    /// This records a user's proof CID for a specific task. The proof must be
+    /// verified by an oracle before any reward is paid.
+    ///
+    /// # Arguments
+    ///
+    /// * `oracle` - The oracle address submitting the proof (must authorize and be registered)
+    /// * `user` - The user address that completed the task
+    /// * `task_id` - The ID of the task that was completed
+    /// * `proof_cid` - The IPFS CID string of the proof
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the contract is paused
+    /// * Panics if oracle is not authorized
+    /// * Panics if oracle is not a registered oracle
+    /// * Panics if a verification already exists for this (task_id, user) pair
+    /// * Panics if the proof CID has already been submitted
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from a registered oracle address.
     pub fn submit_proof(e: Env, oracle: Address, user: Address, task_id: u64, proof_cid: String) {
         require_not_paused(&e);
         oracle.require_auth();
         require_oracle(&e, &oracle);
+
+        if proof_cid.is_empty() {
+            panic!("engine: proof cid must not be empty");
+        }
+        if proof_cid.len() > MAX_CID_LEN {
+            panic!("engine: proof cid too long");
+        }
 
         if storage::read_verification(&e, task_id, &user).is_some() {
             panic!("engine: proof already submitted");
@@ -328,6 +685,35 @@ impl RewardEngine {
         .publish(&e);
     }
 
+    /// Approves a proof and triggers reward payout.
+    ///
+    /// This validates the proof, marks it as approved, calls the registry to
+    /// record the task completion, and mints the reward tokens to the user.
+    ///
+    /// # Arguments
+    ///
+    /// * `oracle` - The oracle address approving the proof (must authorize and be registered)
+    /// * `user` - The user address that completed the task
+    /// * `task_id` - The ID of the task that was completed
+    /// * `reward_amount` - The amount of ECO tokens to reward (must be positive)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the contract is paused
+    /// * Panics if oracle is not authorized
+    /// * Panics if oracle is not a registered oracle
+    /// * Panics if no verification exists for this (task_id, user) pair
+    /// * Panics if the verification is not in Pending status
+    /// * Panics if `reward_amount <= 0`
+    /// * Panics if `reward_amount` is below the minimum reward bound (if set)
+    /// * Panics if `reward_amount` exceeds the maximum reward bound (if set)
+    /// * Panics if the task is not active or has expired (via require_active_task)
+    /// * Panics if `reward_amount` exceeds the task's declared reward budget
+    /// * Panics if the task has reached its max completions
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from a registered oracle address.
     pub fn approve_proof(
         e: Env,
         oracle: Address,
@@ -348,61 +734,45 @@ impl RewardEngine {
             panic!("engine: verification is not pending");
         }
 
-        if reward_amount <= 0 {
-            panic!("engine: reward amount must be positive");
-        }
-        if let Some(min) = storage::read_min_reward(&e) {
-            if reward_amount < min {
-                panic!("engine: reward below minimum");
-            }
-        }
-        if let Some(max) = storage::read_max_reward(&e) {
-            if reward_amount > max {
-                panic!("engine: reward exceeds maximum");
-            }
-        }
-
-        let task = require_active_task(&e, task_id);
-        if reward_amount > task.reward_amount {
-            panic!("engine: reward exceeds task budget");
-        }
-
-        verification.status = VerificationStatus::Approved;
-        verification.reward_amount = reward_amount;
-        verification.resolved_at = Some(e.ledger().timestamp());
-        storage::write_verification(&e, task_id, &user, &verification);
-        storage::remove_verification_key(&e, task_id, &user);
-
-        let registry_id = storage::read_registry(&e);
-        e.invoke_contract::<Val>(
-            &registry_id,
-            &Symbol::new(&e, "complete_task"),
-            vec![
-                &e,
-                e.current_contract_address().into_val(&e),
-                task_id.into_val(&e),
-                user.clone().into_val(&e),
-            ],
-        );
-
-        let token_id = storage::read_token(&e);
-        e.invoke_contract::<Val>(
-            &token_id,
-            &Symbol::new(&e, "mint"),
-            vec![&e, user.clone().into_val(&e), reward_amount.into_val(&e)],
-        );
+        // See `approve_and_pay` for the ordering that keeps this payout
+        // atomic: all validation runs first, then the cross-contract calls
+        // (complete_task, mint), and only then is the verification marked
+        // Approved locally. A panic in any sub-call therefore leaves no
+        // orphaned Approved record, consumed completion slot, or total_paid
+        // drift.
+        approve_and_pay(&e, &user, task_id, reward_amount, &mut verification);
 
         RewardPaidEvent {
             oracle,
-            user,
+            user: user.clone(),
             task_id,
             amount: reward_amount,
         }
         .publish(&e);
-
-        storage::add_total_paid(&e, reward_amount);
     }
 
+    /// Rejects a proof without payout.
+    ///
+    /// This marks a verification as rejected, meaning the user will not receive
+    /// any reward for this proof submission.
+    ///
+    /// # Arguments
+    ///
+    /// * `oracle` - The oracle address rejecting the proof (must authorize and be registered)
+    /// * `user` - The user address that submitted the proof
+    /// * `task_id` - The ID of the task
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the contract is paused
+    /// * Panics if oracle is not authorized
+    /// * Panics if oracle is not a registered oracle
+    /// * Panics if no verification exists for this (task_id, user) pair
+    /// * Panics if the verification is not in Pending status
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from a registered oracle address.
     pub fn reject_proof(e: Env, oracle: Address, user: Address, task_id: u64) {
         require_not_paused(&e);
         oracle.require_auth();
@@ -430,6 +800,26 @@ impl RewardEngine {
         .publish(&e);
     }
 
+    /// Escalates a pending or rejected proof to dispute status.
+    ///
+    /// Disputed proofs require admin resolution before any payout can occur.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `user` - The user address that submitted the proof
+    /// * `task_id` - The ID of the task
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the contract is paused
+    /// * Panics if caller is not the admin
+    /// * Panics if no verification exists for this (task_id, user) pair
+    /// * Panics if the verification is not in Pending or Rejected status
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn dispute_proof(e: Env, caller: Address, user: Address, task_id: u64) {
         require_not_paused(&e);
         caller.require_auth();
@@ -453,6 +843,32 @@ impl RewardEngine {
         DisputeRaisedEvent { user, task_id }.publish(&e);
     }
 
+    /// Resolves a disputed proof, either approving with payout or rejecting.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `user` - The user address that submitted the proof
+    /// * `task_id` - The ID of the task
+    /// * `approve` - true to approve and pay, false to reject
+    /// * `reward_amount` - The reward amount if approving (must be positive)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the contract is paused
+    /// * Panics if caller is not the admin
+    /// * Panics if no verification exists for this (task_id, user) pair
+    /// * Panics if the verification is not in Disputed status
+    /// * Panics if `approve` is true and `reward_amount <= 0`
+    /// * Panics if `approve` is true and `reward_amount` is below the minimum (if set)
+    /// * Panics if `approve` is true and `reward_amount` exceeds the maximum (if set)
+    /// * Panics if `approve` is true and the task is not active or has expired
+    /// * Panics if `approve` is true and `reward_amount` exceeds the task's budget
+    /// * Panics if `approve` is true and the task has reached its max completions
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn resolve_dispute(
         e: Env,
         caller: Address,
@@ -475,50 +891,11 @@ impl RewardEngine {
         }
 
         if approve {
-            if reward_amount <= 0 {
-                panic!("engine: reward amount must be positive");
-            }
-            if let Some(min) = storage::read_min_reward(&e) {
-                if reward_amount < min {
-                    panic!("engine: reward below minimum");
-                }
-            }
-            if let Some(max) = storage::read_max_reward(&e) {
-                if reward_amount > max {
-                    panic!("engine: reward exceeds maximum");
-                }
-            }
-
-            let task = require_active_task(&e, task_id);
-            if reward_amount > task.reward_amount {
-                panic!("engine: reward exceeds task budget");
-            }
-
-            verification.status = VerificationStatus::Approved;
-            verification.reward_amount = reward_amount;
-            verification.resolved_at = Some(e.ledger().timestamp());
-            storage::write_verification(&e, task_id, &user, &verification);
-
-            let registry_id = storage::read_registry(&e);
-            e.invoke_contract::<Val>(
-                &registry_id,
-                &Symbol::new(&e, "complete_task"),
-                vec![
-                    &e,
-                    e.current_contract_address().into_val(&e),
-                    task_id.into_val(&e),
-                    user.clone().into_val(&e),
-                ],
-            );
-
-            let token_id = storage::read_token(&e);
-            e.invoke_contract::<Val>(
-                &token_id,
-                &Symbol::new(&e, "mint"),
-                vec![&e, user.clone().into_val(&e), reward_amount.into_val(&e)],
-            );
-
-            storage::add_total_paid(&e, reward_amount);
+            // Same atomic ordering as `approve_proof`: validation, then the
+            // cross-contract calls, then the local Approved write (see
+            // `approve_and_pay`). A mint failure here leaves the verification
+            // Disputed — not Approved — with no completed task or payout.
+            approve_and_pay(&e, &user, task_id, reward_amount, &mut verification);
         } else {
             verification.status = VerificationStatus::Rejected;
             verification.resolved_at = Some(e.ledger().timestamp());
@@ -534,6 +911,20 @@ impl RewardEngine {
         .publish(&e);
     }
 
+    /// Retrieves a verification record for a specific user and task.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The ID of the task
+    /// * `user` - The user address
+    ///
+    /// # Returns
+    ///
+    /// The Verification struct for the requested (task_id, user) pair.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no verification exists for this pair.
     pub fn get_verification(e: Env, task_id: u64, user: Address) -> Verification {
         match storage::read_verification(&e, task_id, &user) {
             Some(v) => v,
@@ -541,6 +932,19 @@ impl RewardEngine {
         }
     }
 
+    /// Retrieves a verification record by its proof CID hash.
+    ///
+    /// # Arguments
+    ///
+    /// * `cid_hash` - The SHA-256 hash of the proof CID
+    ///
+    /// # Returns
+    ///
+    /// The Verification struct for the proof with the given CID hash.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no verification exists for this CID hash.
     pub fn get_verification_by_cid_hash(e: Env, cid_hash: BytesN<32>) -> Verification {
         let key = match storage::read_cid_index(&e, &cid_hash) {
             Some(key) => key,
@@ -555,6 +959,15 @@ impl RewardEngine {
     /// Returns up to `limit` pending verifications starting from `cursor`
     /// (a zero-based offset into the full verification log). Bounded reads
     /// make this safe for off-chain indexers to paginate at scale.
+    ///
+    /// # Arguments
+    ///
+    /// * `cursor` - The starting offset (zero-based)
+    /// * `limit` - The maximum number of verifications to return
+    ///
+    /// # Returns
+    ///
+    /// A vector of pending verification records.
     pub fn get_pending_verifications_paged(
         e: Env,
         cursor: u32,
@@ -563,12 +976,27 @@ impl RewardEngine {
         collect_pending(&e, cursor, limit)
     }
 
+    /// Returns all pending verifications.
+    ///
+    /// # Returns
+    ///
+    /// A vector of all pending verification records.
     pub fn get_pending_verifications(e: Env) -> soroban_sdk::Vec<Verification> {
         collect_pending(&e, 0, u32::MAX)
     }
 
     /// Pageable history of a single user's verifications across all tasks,
     /// ordered by submission.
+    ///
+    /// # Arguments
+    ///
+    /// * `user` - The user address to query
+    /// * `cursor` - The starting offset (zero-based)
+    /// * `limit` - The maximum number of verifications to return
+    ///
+    /// # Returns
+    ///
+    /// A vector of verification records for the specified user.
     pub fn get_verifications_by_user(
         e: Env,
         user: Address,
@@ -587,17 +1015,63 @@ impl RewardEngine {
         result
     }
 
+    /// Returns the total amount of ECO tokens paid out by this engine.
+    ///
+    /// # Returns
+    ///
+    /// The cumulative sum of all approved rewards as an i128.
     pub fn total_paid(e: Env) -> i128 {
         storage::read_total_paid(&e)
     }
 
-    pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+    /// Transfers the admin role to a new address.
+    ///
+    /// # Arguments
+    ///
+    /// * `current_admin` - The current admin address (must authorize)
+    /// * `new_admin` - The new admin address to transfer control to
+    ///
+    /// # Panics
+    ///
+    /// * Panics if `current_admin` is not the stored admin
+    /// * Panics if `new_admin == current_admin`
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the current admin address.
+    pub fn propose_admin(e: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
         require_admin(&e, &current_admin);
         if new_admin == current_admin {
             panic!("engine: new admin must be different");
         }
-        storage::write_admin(&e, &new_admin);
+        storage::write_pending_admin(&e, &new_admin);
+        AdminProposedEvent {
+            current_admin,
+            proposed_admin: new_admin,
+        }
+        .publish(&e);
+    }
+
+    pub fn accept_admin(e: Env, pending_admin: Address) {
+        pending_admin.require_auth();
+        let proposed =
+            storage::read_pending_admin(&e).unwrap_or_else(|| panic!("engine: no pending admin"));
+        if pending_admin != proposed {
+            panic!("engine: unauthorized pending admin");
+        }
+        storage::write_admin(&e, &pending_admin);
+        storage::remove_pending_admin(&e);
+        AdminAcceptedEvent {
+            new_admin: pending_admin,
+        }
+        .publish(&e);
+    }
+
+    // DEPRECATED: use propose_admin. This alias preserves the existing ABI while
+    // requiring the proposed admin to accept before gaining control.
+    pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+        Self::propose_admin(e, current_admin, new_admin);
     }
 }
 
@@ -953,16 +1427,67 @@ mod test {
     }
 
     #[test]
+    fn test_approve_at_exact_expiry_boundary() {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&e);
+        let oracle = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        let token_id = deploy_token(&e, &admin);
+        let reg_id = deploy_registry(&e, &admin);
+
+        let engine_id = e.register(RewardEngine, ());
+        let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+        let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+        reg_client.add_sponsor(&admin, &engine_id);
+
+        engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+        // Create task with expiry at exactly timestamp 2000.
+        e.ledger().set_timestamp(1000);
+        let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+        let task_id = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            &loc_hash,
+            &1000,
+            &1,
+            &2000,
+        );
+
+        // At expires_at == 2000 the task is still live (< semantics).
+        e.ledger().set_timestamp(2000);
+        let proof_cid = String::from_str(&e, "QmBoundary");
+        engine_client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+        engine_client.approve_proof(&oracle, &user, &task_id, &1000);
+
+        let token_client = eco_token::TokenContractClient::new(&e, &token_id);
+        assert_eq!(token_client.balance(&user), 1000);
+        assert!(reg_client.is_task_completed(&task_id, &user));
+
+        // One second later the task is expired.
+        e.ledger().set_timestamp(2001);
+        let user2 = Address::generate(&e);
+        let proof_cid2 = String::from_str(&e, "QmAfterExpiry");
+        engine_client.submit_proof(&oracle, &user2, &task_id, &proof_cid2);
+        let result = engine_client.try_approve_proof(&oracle, &user2, &task_id, &1000);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn test_reward_range_enforced() {
         let (e, admin, oracle, user, task_id, client) = setup();
         e.mock_all_auths_allowing_non_root_auth();
 
-        // Set allowed range: 500 – 2000
+        // Set allowed range: 500 - 2000
         client.set_reward_range(&admin, &500, &2000);
 
         let proof_cid = String::from_str(&e, "QmRangeOk");
         client.submit_proof(&oracle, &user, &task_id, &proof_cid);
-        // 1000 is within range — should succeed
+        // 1000 is within range - should succeed
         client.approve_proof(&oracle, &user, &task_id, &1000);
 
         let v = client.get_verification(&task_id, &user);
@@ -1075,9 +1600,40 @@ mod test {
 
         let new_admin = Address::generate(&e);
         client.transfer_admin(&admin, &new_admin);
+        client.accept_admin(&new_admin);
 
         let new_oracle = Address::generate(&e);
         client.set_oracle(&new_admin, &new_oracle);
+    }
+
+    #[test]
+    fn test_propose_admin_overwrite() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+        let first = Address::generate(&e);
+        let second = Address::generate(&e);
+        client.propose_admin(&admin, &first);
+        client.propose_admin(&admin, &second);
+        client.accept_admin(&second);
+        let new_oracle = Address::generate(&e);
+        client.set_oracle(&second, &new_oracle);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: unauthorized pending admin")]
+    fn test_accept_admin_wrong_address() {
+        let (e, admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+        client.propose_admin(&admin, &Address::generate(&e));
+        client.accept_admin(&Address::generate(&e));
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: no pending admin")]
+    fn test_accept_admin_without_proposal() {
+        let (e, _admin, _oracle, _user, _task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+        client.accept_admin(&Address::generate(&e));
     }
 
     #[test]
@@ -1611,5 +2167,131 @@ mod test {
         let stranger = Address::generate(&e);
         let result = client.get_verifications_by_user(&stranger, &0, &10);
         assert_eq!(result.len(), 0);
+    }
+
+    /// Shared fixture for cooldown tests: one admin/oracle/user plus two
+    /// separate tasks so the same user can be rewarded twice.
+    fn setup_cooldown() -> (
+        Env,
+        Address,
+        Address,
+        Address,
+        u64,
+        u64,
+        RewardEngineClient<'static>,
+    ) {
+        let e = Env::default();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let admin = Address::generate(&e);
+        let oracle = Address::generate(&e);
+        let user = Address::generate(&e);
+
+        let token_id = deploy_token(&e, &admin);
+        let reg_id = deploy_registry(&e, &admin);
+        let engine_id = e.register(RewardEngine, ());
+        let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+        let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+        reg_client.add_sponsor(&admin, &engine_id);
+        engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+        let expires_at = e.ledger().timestamp() + 10000;
+        let task1 = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "cooldown-task-one"),
+            &soroban_sdk::BytesN::<32>::random(&e),
+            &1000,
+            &1,
+            &expires_at,
+        );
+        let task2 = reg_client.create_task(
+            &admin,
+            &String::from_str(&e, "cooldown-task-two"),
+            &soroban_sdk::BytesN::<32>::random(&e),
+            &1000,
+            &1,
+            &expires_at,
+        );
+
+        (e, admin, oracle, user, task1, task2, engine_client)
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: user cooldown active")]
+    fn test_cooldown_blocks_rapid_claims() {
+        let (e, admin, oracle, user, task1, task2, client) = setup_cooldown();
+
+        client.set_user_cooldown(&admin, &10);
+
+        let p1 = String::from_str(&e, "QmCooldownBlock1");
+        client.submit_proof(&oracle, &user, &task1, &p1);
+        client.approve_proof(&oracle, &user, &task1, &500);
+
+        // Still within the cooldown window: this must panic.
+        let p2 = String::from_str(&e, "QmCooldownBlock2");
+        client.submit_proof(&oracle, &user, &task2, &p2);
+        client.approve_proof(&oracle, &user, &task2, &500);
+    }
+
+    #[test]
+    fn test_cooldown_resets_after_interval() {
+        let (e, admin, oracle, user, task1, task2, client) = setup_cooldown();
+
+        client.set_user_cooldown(&admin, &10);
+
+        let p1 = String::from_str(&e, "QmCooldownReset1");
+        client.submit_proof(&oracle, &user, &task1, &p1);
+        client.approve_proof(&oracle, &user, &task1, &500);
+
+        // Advance past the cooldown window before claiming again.
+        let next = e.ledger().sequence() + 10;
+        e.ledger().set_sequence_number(next);
+
+        let p2 = String::from_str(&e, "QmCooldownReset2");
+        client.submit_proof(&oracle, &user, &task2, &p2);
+        client.approve_proof(&oracle, &user, &task2, &500);
+
+        let v = client.get_verification(&task2, &user);
+        assert_eq!(v.status, VerificationStatus::Approved);
+    }
+
+    #[test]
+    fn test_cooldown_zero_disabled() {
+        let (e, _admin, oracle, user, task1, task2, client) = setup_cooldown();
+
+        // Default cooldown is 0 (disabled) — back-to-back rewards succeed.
+        let p1 = String::from_str(&e, "QmCooldownDisabled1");
+        client.submit_proof(&oracle, &user, &task1, &p1);
+        client.approve_proof(&oracle, &user, &task1, &500);
+
+        let p2 = String::from_str(&e, "QmCooldownDisabled2");
+        client.submit_proof(&oracle, &user, &task2, &p2);
+        client.approve_proof(&oracle, &user, &task2, &500);
+
+        let v = client.get_verification(&task2, &user);
+        assert_eq!(v.status, VerificationStatus::Approved);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: proof cid must not be empty")]
+    fn test_submit_empty_cid_fails() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+    }
+
+    #[test]
+    #[should_panic(expected = "engine: proof cid too long")]
+    fn test_submit_oversized_cid_fails() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        // 129 bytes exceeds MAX_CID_LEN (128)
+        let long_cid = "a".repeat(129);
+        let proof_cid = String::from_str(&e, &long_cid);
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
     }
 }

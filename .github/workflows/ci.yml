@@ -2,7 +2,40 @@
 name: CI
 on: [push, pull_request]
 
+permissions:
+  contents: read
+  pull-requests: read
+
 jobs:
+  changelog:
+    name: Require changelog for contract changes
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect contract and changelog changes
+        id: changes
+        run: |
+          BASE=${{ github.event.pull_request.base.sha }}
+          HEAD=${{ github.event.pull_request.head.sha }}
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE '^contracts/[^/]+/src/[^/]+\.rs$'; then
+            echo "contracts=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "contracts=false" >> "$GITHUB_OUTPUT"
+          fi
+          if git diff --name-only "$BASE" "$HEAD" | grep -qE '^CHANGELOG\.md$'; then
+            echo "changelog=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changelog=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Require changelog entry
+        if: steps.changes.outputs.contracts == 'true' && steps.changes.outputs.changelog != 'true'
+        run: |
+          echo "::error::Contract source changes require a CHANGELOG.md entry."
+          exit 1
+
   lint-and-build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -16,6 +49,10 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo build --target wasm32v1-none --release --locked
+      - name: Check documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
 
   unit-tests:
     runs-on: ubuntu-latest

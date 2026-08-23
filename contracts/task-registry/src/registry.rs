@@ -1,6 +1,6 @@
 use crate::{access, storage};
+pub use ecotask_types::{Task, TaskStatus};
 use soroban_sdk::{contract, contractevent, contractimpl, Address, BytesN, Env, String};
-pub use storage::{Task, TaskStatus};
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -55,11 +55,40 @@ pub struct SponsorRemovedEvent {
     pub sponsor: Address,
 }
 
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminProposedEvent {
+    #[topic]
+    pub current_admin: Address,
+    #[topic]
+    pub proposed_admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AdminAcceptedEvent {
+    #[topic]
+    pub new_admin: Address,
+}
+
 #[contract]
 pub struct RegistryContract;
 
 #[contractimpl]
 impl RegistryContract {
+    /// Initializes the registry contract with an admin address.
+    ///
+    /// # Arguments
+    ///
+    /// * `admin` - The initial administrator address
+    ///
+    /// # Panics
+    ///
+    /// Panics if the contract has already been initialized.
+    ///
+    /// # Auth
+    ///
+    /// No authentication required. Can only be called once during deployment.
     pub fn initialize(e: Env, admin: Address) {
         if storage::has_admin(&e) {
             panic!("registry: already initialized");
@@ -67,6 +96,22 @@ impl RegistryContract {
         storage::write_admin(&e, &admin);
     }
 
+    /// Adds a sponsor address to the approved sponsors list.
+    ///
+    /// Sponsors are authorized to create and complete tasks.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `sponsor` - The address to add as a sponsor
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn add_sponsor(e: Env, caller: Address, sponsor: Address) {
         caller.require_auth();
         access::require_admin(&e, &caller);
@@ -74,6 +119,20 @@ impl RegistryContract {
         SponsorAddedEvent { sponsor }.publish(&e);
     }
 
+    /// Removes a sponsor address from the approved sponsors list.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `sponsor` - The address to remove from sponsors
+    ///
+    /// # Panics
+    ///
+    /// Panics if caller is not the admin.
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn remove_sponsor(e: Env, caller: Address, sponsor: Address) {
         caller.require_auth();
         access::require_admin(&e, &caller);
@@ -81,6 +140,32 @@ impl RegistryContract {
         SponsorRemovedEvent { sponsor }.publish(&e);
     }
 
+    /// Creates a new task in the registry.
+    ///
+    /// # Arguments
+    ///
+    /// * `creator` - The address creating the task (must be a sponsor or admin)
+    /// * `task_type` - A string describing the type of task (e.g., "tree-planting")
+    /// * `location_hash` - SHA-256 hash of the task location (32 bytes)
+    /// * `reward_amount` - The maximum ECO reward per completion (must be positive)
+    /// * `max_completions` - The maximum number of times this task can be completed (must be positive)
+    /// * `expires_at` - The ledger timestamp when this task expires (must be in the future)
+    ///
+    /// # Returns
+    ///
+    /// The ID of the newly created task.
+    ///
+    /// # Panics
+    ///
+    /// * Panics if `task_type` is empty
+    /// * Panics if `reward_amount <= 0`
+    /// * Panics if `max_completions == 0`
+    /// * Panics if `expires_at` is in the past
+    /// * Panics if creator is not a sponsor or admin
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the creator address, which must be a sponsor or admin.
     pub fn create_task(
         e: Env,
         creator: Address,
@@ -130,6 +215,27 @@ impl RegistryContract {
         task_id
     }
 
+    /// Retrieves a task by its ID.
+    ///
+    /// The returned status is the last value written to storage. An active task whose
+    /// deadline has passed still reads as active until an expiry function persists the
+    /// change. Use `get_task_live_status` to obtain its effective status.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The ID of the task to retrieve
+    ///
+    /// # Returns
+    ///
+    /// The task with its stored status.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no task exists with the given ID.
+    ///
+    /// # Auth
+    ///
+    /// No authentication is required.
     pub fn get_task(e: Env, task_id: u64) -> Task {
         match storage::read_task(&e, task_id) {
             Some(task) => task,
@@ -137,6 +243,64 @@ impl RegistryContract {
         }
     }
 
+    /// Retrieves a task with its effective status at the current ledger timestamp.
+    ///
+    /// Unlike `get_task`, this reports an active task as expired after its deadline,
+    /// even if the stored status has not been updated. This function is read-only; use
+    /// `expire_task_permissionless` to persist the expired status.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The ID of the task to retrieve
+    ///
+    /// # Returns
+    ///
+    /// The task with its effective status.
+    ///
+    /// # Panics
+    ///
+    /// Panics if no task exists with the given ID.
+    ///
+    /// # Auth
+    ///
+    /// No authentication is required.
+    pub fn get_task_live_status(e: Env, task_id: u64) -> Task {
+        let mut task = match storage::read_task(&e, task_id) {
+            Some(task) => task,
+            None => panic!("registry: task not found"),
+        };
+
+        if task.status == TaskStatus::Active && task.expires_at < e.ledger().timestamp() {
+            task.status = TaskStatus::Expired;
+        }
+
+        task
+    }
+
+    /// Marks a task as completed for a specific user.
+    ///
+    /// This records that the user has successfully completed the task and increments
+    /// the task's completion count. If the task reaches its max completions, its
+    /// status is changed to Completed.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address marking the task as complete (must be a sponsor or admin)
+    /// * `task_id` - The ID of the task to mark as complete
+    /// * `user` - The user address that completed the task
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if the task creator's sponsor status has been revoked
+    /// * Panics if the task is not Active
+    /// * Panics if the task has expired
+    /// * Panics if the user has already completed this task (double-claim prevention)
+    /// * Panics if the task has reached its max completions
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the caller address, which must be a sponsor or admin.
     pub fn complete_task(e: Env, caller: Address, task_id: u64, user: Address) {
         caller.require_auth();
         access::require_sponsor(&e, &caller);
@@ -154,6 +318,9 @@ impl RegistryContract {
         if task.status != TaskStatus::Active {
             panic!("registry: task is not active");
         }
+        // Semantics: a task is live when expires_at >= now (i.e. it expires
+        // only after the timestamp strictly exceeds expires_at). This must
+        // match reward_engine::require_active_task exactly.
         if task.expires_at < e.ledger().timestamp() {
             panic!("registry: task expired");
         }
@@ -175,6 +342,22 @@ impl RegistryContract {
         TaskCompletedEvent { user, task_id }.publish(&e);
     }
 
+    /// Force-expires an active task.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `task_id` - The ID of the task to expire
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if the task is not Active
+    /// * Panics if caller is not the admin
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn expire_task(e: Env, caller: Address, task_id: u64) {
         caller.require_auth();
         access::require_admin(&e, &caller);
@@ -192,9 +375,64 @@ impl RegistryContract {
         storage::write_task(&e, &task);
     }
 
+    /// Persists an active task as expired after its deadline has passed.
+    ///
+    /// This permissionless operation allows any indexer or user to synchronize the
+    /// stored status without waiting for the administrator to call `expire_task`.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The ID of the task to expire
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if the task is not Active
+    /// * Panics if the task's deadline has not passed
+    ///
+    /// # Auth
+    ///
+    /// No authentication is required.
+    pub fn expire_task_permissionless(e: Env, task_id: u64) {
+        let mut task = match storage::read_task(&e, task_id) {
+            Some(task) => task,
+            None => panic!("registry: task not found"),
+        };
+
+        if task.status != TaskStatus::Active {
+            panic!("registry: task is not active");
+        }
+        if task.expires_at >= e.ledger().timestamp() {
+            panic!("registry: task not yet expired");
+        }
+
+        task.status = TaskStatus::Expired;
+        storage::write_task(&e, &task);
+
+        TaskExpiredEvent { task_id }.publish(&e);
+    }
+
     /// Extends the expiry of an active task. Callable by the task creator or
     /// the admin. The new expiry must be strictly later than the current one
     /// (i.e. a genuine extension) and still in the future.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be task creator or admin)
+    /// * `task_id` - The ID of the task to extend
+    /// * `new_expires_at` - The new expiry timestamp (must be > current expiry and in the future)
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if caller is not the task creator or admin
+    /// * Panics if the task is not Active
+    /// * Panics if `new_expires_at` is in the past
+    /// * Panics if `new_expires_at` does not extend the current expiry
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the caller address.
     pub fn extend_task_expiry(e: Env, caller: Address, task_id: u64, new_expires_at: u64) {
         caller.require_auth();
         let admin = storage::read_admin(&e);
@@ -228,6 +466,22 @@ impl RegistryContract {
         .publish(&e);
     }
 
+    /// Cancels an active task. Only the task creator can cancel their own task.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be the task creator)
+    /// * `task_id` - The ID of the task to cancel
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if caller is not the task creator
+    /// * Panics if the task is not Active
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the caller address.
     pub fn cancel_task(e: Env, caller: Address, task_id: u64) {
         caller.require_auth();
 
@@ -253,6 +507,22 @@ impl RegistryContract {
         .publish(&e);
     }
 
+    /// Cancels any active task. Admin-only governance function.
+    ///
+    /// # Arguments
+    ///
+    /// * `caller` - The address invoking the function (must be admin)
+    /// * `task_id` - The ID of the task to cancel
+    ///
+    /// # Panics
+    ///
+    /// * Panics if the task does not exist
+    /// * Panics if the task is not Active
+    /// * Panics if caller is not the admin
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the admin address.
     pub fn admin_cancel_task(e: Env, caller: Address, task_id: u64) {
         caller.require_auth();
         access::require_admin(&e, &caller);
@@ -276,37 +546,102 @@ impl RegistryContract {
         .publish(&e);
     }
 
+    /// Returns the total number of tasks created.
+    ///
+    /// # Returns
+    ///
+    /// The count of tasks created (also the next available task ID).
     pub fn task_count(e: Env) -> u64 {
         storage::read_task_count(&e)
     }
 
+    /// Checks if a specific user has completed a specific task.
+    ///
+    /// # Arguments
+    ///
+    /// * `task_id` - The ID of the task to check
+    /// * `user` - The user address to check
+    ///
+    /// # Returns
+    ///
+    /// true if the user has completed the task, false otherwise.
     pub fn is_task_completed(e: Env, task_id: u64, user: Address) -> bool {
         storage::is_completed(&e, task_id, &user)
     }
 
+    /// Returns task IDs created by a specific creator, capped at
+    /// `MAX_CREATOR_TASKS_QUERY` entries.
+    ///
+    /// # Deprecation notice
+    ///
+    /// This function is retained for API compatibility but is **deprecated**.
+    /// Callers should migrate to `get_tasks_by_creator_paged`, which reads only
+    /// the entries needed for each page and scales correctly for any number of
+    /// tasks. This unpaged variant returns at most `MAX_CREATOR_TASKS_QUERY`
+    /// (50) results; creators with more tasks than that cap will not see their
+    /// full history through this call.
+    ///
+    /// The cap is intentionally conservative. Soroban enforces a hard limit of
+    /// 100 total ledger-entry footprint entries per transaction. Reading more
+    /// than ~98 indexed `CreatorTask` entries in a single call would breach
+    /// that limit on a real network. The 50-entry cap gives ample headroom
+    /// while still being useful for small creator histories. Use
+    /// `get_tasks_by_creator_paged` to retrieve larger histories safely.
+    ///
+    /// # Arguments
+    ///
+    /// * `creator` - The address of the creator to query
+    ///
+    /// # Returns
+    ///
+    /// Up to `MAX_CREATOR_TASKS_QUERY` task IDs created by the specified creator.
     pub fn get_tasks_by_creator(e: Env, creator: Address) -> soroban_sdk::Vec<u64> {
-        storage::read_creator_tasks(&e, &creator)
+        /// Hard cap on the unpaged creator-task query. Must stay well below the
+        /// Soroban per-transaction ledger-entry footprint limit (100 entries).
+        /// Use `get_tasks_by_creator_paged` for creators with more than this
+        /// many tasks.
+        const MAX_CREATOR_TASKS_QUERY: u64 = 50;
+        storage::read_creator_tasks_paged(&e, &creator, 0, MAX_CREATOR_TASKS_QUERY)
     }
 
-    /// Pageable slice of the task ids created by `creator`. `cursor` is the
-    /// zero-based offset into the creator's full task list and `limit` caps
-    /// the number of ids returned.
+    /// Pageable slice of the task IDs created by `creator`.
+    ///
+    /// `cursor` is the zero-based offset into the creator's indexed task list
+    /// and `limit` caps the number of IDs returned. Only the storage entries
+    /// for the requested page are read; the full creator history is never
+    /// loaded. This is the canonical way to enumerate a creator's tasks.
+    ///
+    /// # Arguments
+    ///
+    /// * `creator` - The address of the creator to query
+    /// * `cursor` - The zero-based offset into the creator's task list
+    /// * `limit` - The maximum number of task IDs to return
+    ///
+    /// # Returns
+    ///
+    /// A vector of up to `limit` task IDs, starting from `cursor`.
     pub fn get_tasks_by_creator_paged(
         e: Env,
         creator: Address,
         cursor: u32,
         limit: u32,
     ) -> soroban_sdk::Vec<u64> {
-        let ids = storage::read_creator_tasks(&e, &creator);
-        let start = cursor.min(ids.len());
-        let end = (start + limit).min(ids.len());
-        ids.slice(start..end)
+        storage::read_creator_tasks_paged(&e, &creator, cursor as u64, limit as u64)
     }
 
     /// Pageable listing of every task in the registry ordered by id.
     /// `cursor` is the lowest task id to include (inclusive) and `limit` caps
     /// the number of tasks returned. Safe for off-chain indexers to paginate
     /// through without pulling the entire registry in one call.
+    ///
+    /// # Arguments
+    ///
+    /// * `cursor` - The starting task ID (inclusive)
+    /// * `limit` - The maximum number of tasks to return
+    ///
+    /// # Returns
+    ///
+    /// A vector of up to `limit` Task structs, starting from `cursor`.
     pub fn list_tasks(e: Env, cursor: u64, limit: u32) -> soroban_sdk::Vec<Task> {
         let count = storage::read_task_count(&e);
         let mut tasks: soroban_sdk::Vec<Task> = soroban_sdk::Vec::new(&e);
@@ -322,7 +657,22 @@ impl RegistryContract {
         tasks
     }
 
-    pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+    /// Transfers the admin role to a new address.
+    ///
+    /// # Arguments
+    ///
+    /// * `current_admin` - The current admin address (must authorize)
+    /// * `new_admin` - The new admin address to transfer control to
+    ///
+    /// # Panics
+    ///
+    /// * Panics if `current_admin` is not the stored admin
+    /// * Panics if `new_admin == current_admin`
+    ///
+    /// # Auth
+    ///
+    /// Requires authentication from the current admin address.
+    pub fn propose_admin(e: Env, current_admin: Address, new_admin: Address) {
         current_admin.require_auth();
         let stored_admin = storage::read_admin(&e);
         if current_admin != stored_admin {
@@ -331,7 +681,33 @@ impl RegistryContract {
         if new_admin == current_admin {
             panic!("registry: new admin must be different");
         }
-        storage::write_admin(&e, &new_admin);
+        storage::write_pending_admin(&e, &new_admin);
+        AdminProposedEvent {
+            current_admin,
+            proposed_admin: new_admin,
+        }
+        .publish(&e);
+    }
+
+    pub fn accept_admin(e: Env, pending_admin: Address) {
+        pending_admin.require_auth();
+        let proposed =
+            storage::read_pending_admin(&e).unwrap_or_else(|| panic!("registry: no pending admin"));
+        if pending_admin != proposed {
+            panic!("registry: unauthorized pending admin");
+        }
+        storage::write_admin(&e, &pending_admin);
+        storage::remove_pending_admin(&e);
+        AdminAcceptedEvent {
+            new_admin: pending_admin,
+        }
+        .publish(&e);
+    }
+
+    // DEPRECATED: use propose_admin. This alias preserves the existing ABI while
+    // requiring the proposed admin to accept before gaining control.
+    pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+        Self::propose_admin(e, current_admin, new_admin);
     }
 }
 
@@ -503,6 +879,69 @@ mod test {
     }
 
     #[test]
+    fn test_permissionless_expire_past_deadline() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        e.ledger().set_timestamp(1000);
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            500,
+        );
+
+        e.ledger().set_timestamp(2000);
+        client.expire_task_permissionless(&task_id);
+
+        let task = client.get_task(&task_id);
+        assert_eq!(task.status, TaskStatus::Expired);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: task not yet expired")]
+    fn test_permissionless_expire_not_yet_expired() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            1000,
+        );
+
+        client.expire_task_permissionless(&task_id);
+    }
+
+    #[test]
+    fn test_get_task_live_status_reflects_expiry() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        e.ledger().set_timestamp(1000);
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            500,
+        );
+
+        e.ledger().set_timestamp(2000);
+
+        // Storage is untouched until expire_task_permissionless runs.
+        let stored = client.get_task(&task_id);
+        assert_eq!(stored.status, TaskStatus::Active);
+
+        // The live-status view reports the effective status instead.
+        let live = client.get_task_live_status(&task_id);
+        assert_eq!(live.status, TaskStatus::Expired);
+    }
+
+    #[test]
     fn test_add_sponsor() {
         let (e, admin, client) = setup();
         e.mock_all_auths();
@@ -616,6 +1055,33 @@ mod test {
 
         e.ledger().set_timestamp(3000);
         client.complete_task(&admin, &task_id, &user);
+    }
+
+    #[test]
+    fn test_complete_task_at_exact_expiry() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let user = Address::generate(&e);
+
+        e.ledger().set_timestamp(1000);
+        let task_id = create_test_task(
+            &client,
+            &admin,
+            &String::from_str(&e, "tree-planting"),
+            1,
+            1000,
+        );
+
+        // expires_at == 1000 + 1000 == 2000. At timestamp 2000 the task
+        // is still live (strict < semantics: expired only when timestamp
+        // strictly exceeds expires_at).
+        e.ledger().set_timestamp(2000);
+        client.complete_task(&admin, &task_id, &user);
+
+        let task = client.get_task(&task_id);
+        assert_eq!(task.completions, 1);
+        assert_eq!(task.status, TaskStatus::Completed);
     }
 
     #[test]
@@ -1001,6 +1467,7 @@ mod test {
 
         let new_admin = Address::generate(&e);
         client.transfer_admin(&admin, &new_admin);
+        client.accept_admin(&new_admin);
 
         let loc_hash: BytesN<32> = BytesN::random(&e);
         let task_id = client.create_task(
@@ -1014,6 +1481,34 @@ mod test {
 
         let task = client.get_task(&task_id);
         assert_eq!(task.creator, new_admin);
+    }
+
+    #[test]
+    fn test_propose_admin_overwrite() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+        let first = Address::generate(&e);
+        let second = Address::generate(&e);
+        client.propose_admin(&admin, &first);
+        client.propose_admin(&admin, &second);
+        client.accept_admin(&second);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: unauthorized pending admin")]
+    fn test_accept_admin_wrong_address() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+        client.propose_admin(&admin, &Address::generate(&e));
+        client.accept_admin(&Address::generate(&e));
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: no pending admin")]
+    fn test_accept_admin_without_proposal() {
+        let (e, _admin, client) = setup();
+        e.mock_all_auths();
+        client.accept_admin(&Address::generate(&e));
     }
 
     #[test]
@@ -1134,5 +1629,282 @@ mod test {
         client.complete_task(&admin, &task_id, &user);
         let task = client.get_task(&task_id);
         assert_eq!(task.status, TaskStatus::Completed);
+    }
+
+    // =========================================================================
+    // Issue #52 regression tests — indexed CreatorTask storage
+    // =========================================================================
+
+    /// Regression test: creating 500 tasks for one creator must not panic or
+    /// fail. Before fix #52 the unbounded `CreatorTasks` Vec would grow with
+    /// every task, making each creation O(n) in storage reads/writes. This
+    /// test verifies that the 500th creation succeeds with the new indexed
+    /// storage layout.
+    #[test]
+    fn test_500_task_regression_creation_succeeds() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let mut last_id: u64 = 0;
+
+        for i in 0u32..500 {
+            last_id = create_test_task(&client, &admin, &task_type, 1, 1_000_000 + i as u64);
+        }
+
+        // The 500th creation (index 499) must have succeeded.
+        assert_eq!(last_id, 499);
+
+        // The task is readable through the normal path.
+        let task = client.get_task(&last_id);
+        assert_eq!(task.id, last_id);
+        assert_eq!(task.creator, admin);
+        assert_eq!(task.status, TaskStatus::Active);
+    }
+
+    /// Regression test: the indexed creator task count reaches 500 after
+    /// creating 500 tasks, and all IDs are retrievable through pagination.
+    #[test]
+    fn test_500_task_creator_count_and_full_retrieval() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "coastline-cleanup");
+        let mut expected_ids: Vec<u64> = Vec::new(&e);
+
+        for i in 0u32..500 {
+            let id = create_test_task(&client, &admin, &task_type, 1, 1_000_000 + i as u64);
+            expected_ids.push_back(id);
+        }
+
+        // Pagination: first page
+        let page0 = client.get_tasks_by_creator_paged(&admin, &0, &10);
+        assert_eq!(page0.len(), 10);
+        for i in 0..10u32 {
+            assert_eq!(page0.get(i).unwrap(), expected_ids.get(i).unwrap());
+        }
+
+        // Pagination: middle page at offset 100, limit 50
+        let page_mid = client.get_tasks_by_creator_paged(&admin, &100, &50);
+        assert_eq!(page_mid.len(), 50);
+        for i in 0..50u32 {
+            assert_eq!(page_mid.get(i).unwrap(), expected_ids.get(100 + i).unwrap());
+        }
+
+        // Pagination: near-end page at offset 450, limit 50
+        let page_near_end = client.get_tasks_by_creator_paged(&admin, &450, &50);
+        assert_eq!(page_near_end.len(), 50);
+        for i in 0..50u32 {
+            assert_eq!(
+                page_near_end.get(i).unwrap(),
+                expected_ids.get(450 + i).unwrap()
+            );
+        }
+
+        // Pagination: partial final page at offset 490, limit 20 — only 10 remain
+        let page_partial = client.get_tasks_by_creator_paged(&admin, &490, &20);
+        assert_eq!(page_partial.len(), 10);
+        for i in 0..10u32 {
+            assert_eq!(
+                page_partial.get(i).unwrap(),
+                expected_ids.get(490 + i).unwrap()
+            );
+        }
+
+        // Pagination: offset == count → empty
+        let page_at_end = client.get_tasks_by_creator_paged(&admin, &500, &20);
+        assert_eq!(page_at_end.len(), 0);
+
+        // Pagination: offset > count → empty
+        let page_beyond = client.get_tasks_by_creator_paged(&admin, &600, &20);
+        assert_eq!(page_beyond.len(), 0);
+    }
+
+    /// Verifies that creator task count increments correctly for each new task.
+    #[test]
+    fn test_creator_task_count_increments() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+
+        // No tasks yet — empty page
+        let empty = client.get_tasks_by_creator_paged(&admin, &0, &10);
+        assert_eq!(empty.len(), 0);
+
+        // One task
+        let id0 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let one = client.get_tasks_by_creator_paged(&admin, &0, &10);
+        assert_eq!(one.len(), 1);
+        assert_eq!(one.get(0).unwrap(), id0);
+
+        // Two tasks
+        let id1 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let two = client.get_tasks_by_creator_paged(&admin, &0, &10);
+        assert_eq!(two.len(), 2);
+        assert_eq!(two.get(0).unwrap(), id0);
+        assert_eq!(two.get(1).unwrap(), id1);
+
+        // Three tasks
+        let id2 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let three = client.get_tasks_by_creator_paged(&admin, &0, &10);
+        assert_eq!(three.len(), 3);
+        assert_eq!(three.get(0).unwrap(), id0);
+        assert_eq!(three.get(1).unwrap(), id1);
+        assert_eq!(three.get(2).unwrap(), id2);
+    }
+
+    /// Verifies that multiple creators each maintain independent indexed lists.
+    #[test]
+    fn test_multiple_creators_independent_indexes() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let sponsor1 = Address::generate(&e);
+        let sponsor2 = Address::generate(&e);
+        client.add_sponsor(&admin, &sponsor1);
+        client.add_sponsor(&admin, &sponsor2);
+
+        let task_type = String::from_str(&e, "tree-planting");
+
+        // sponsor1 creates 3 tasks
+        let s1_id0 = create_test_task(&client, &sponsor1, &task_type, 1, 1000);
+        let s1_id1 = create_test_task(&client, &sponsor1, &task_type, 1, 1000);
+        let s1_id2 = create_test_task(&client, &sponsor1, &task_type, 1, 1000);
+
+        // sponsor2 creates 2 tasks
+        let s2_id0 = create_test_task(&client, &sponsor2, &task_type, 1, 1000);
+        let s2_id1 = create_test_task(&client, &sponsor2, &task_type, 1, 1000);
+
+        // sponsor1's list must contain exactly the 3 tasks, in order
+        let s1_ids = client.get_tasks_by_creator_paged(&sponsor1, &0, &10);
+        assert_eq!(s1_ids.len(), 3);
+        assert_eq!(s1_ids.get(0).unwrap(), s1_id0);
+        assert_eq!(s1_ids.get(1).unwrap(), s1_id1);
+        assert_eq!(s1_ids.get(2).unwrap(), s1_id2);
+
+        // sponsor2's list must contain exactly the 2 tasks, in order
+        let s2_ids = client.get_tasks_by_creator_paged(&sponsor2, &0, &10);
+        assert_eq!(s2_ids.len(), 2);
+        assert_eq!(s2_ids.get(0).unwrap(), s2_id0);
+        assert_eq!(s2_ids.get(1).unwrap(), s2_id1);
+
+        // admin's list is empty (admin created no tasks in this test)
+        let admin_ids = client.get_tasks_by_creator_paged(&admin, &0, &10);
+        assert_eq!(admin_ids.len(), 0);
+    }
+
+    /// Edge case: limit == 0 returns an empty vector without panicking.
+    #[test]
+    fn test_paged_limit_zero_returns_empty() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        create_test_task(&client, &admin, &task_type, 1, 1000);
+
+        let result = client.get_tasks_by_creator_paged(&admin, &0, &0);
+        assert_eq!(result.len(), 0);
+    }
+
+    /// Edge case: limit == 1 returns exactly one entry.
+    #[test]
+    fn test_paged_limit_one() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let id0 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        create_test_task(&client, &admin, &task_type, 1, 1000);
+
+        let result = client.get_tasks_by_creator_paged(&admin, &0, &1);
+        assert_eq!(result.len(), 1);
+        assert_eq!(result.get(0).unwrap(), id0);
+    }
+
+    /// Edge case: limit larger than remaining tasks returns only the
+    /// remaining entries (partial final page).
+    #[test]
+    fn test_paged_limit_larger_than_remaining() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let id0 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let id1 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let id2 = create_test_task(&client, &admin, &task_type, 1, 1000);
+
+        // 5 tasks requested but only 2 remain after offset 1
+        let result = client.get_tasks_by_creator_paged(&admin, &1, &5);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result.get(0).unwrap(), id1);
+        assert_eq!(result.get(1).unwrap(), id2);
+
+        // Also check id0 isn't lost
+        let first = client.get_tasks_by_creator_paged(&admin, &0, &1);
+        assert_eq!(first.get(0).unwrap(), id0);
+    }
+
+    /// Verifies that the deprecated unpaged `get_tasks_by_creator` still
+    /// works correctly for creators with fewer than the 200-entry cap.
+    #[test]
+    fn test_get_tasks_by_creator_below_cap() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let id0 = create_test_task(&client, &admin, &task_type, 1, 1000);
+        let id1 = create_test_task(&client, &admin, &task_type, 1, 1000);
+
+        let ids = client.get_tasks_by_creator(&admin);
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids.get(0).unwrap(), id0);
+        assert_eq!(ids.get(1).unwrap(), id1);
+    }
+
+    /// Verifies that the deprecated unpaged `get_tasks_by_creator` caps at
+    /// 50 entries for a creator with exactly 51 tasks.
+    #[test]
+    fn test_get_tasks_by_creator_hard_cap_at_50() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        for i in 0u32..51 {
+            create_test_task(&client, &admin, &task_type, 1, 1_000_000 + i as u64);
+        }
+
+        // Unpaged call must be capped at 50.
+        let ids = client.get_tasks_by_creator(&admin);
+        assert_eq!(ids.len(), 50);
+
+        // The 51st task IS accessible through pagination.
+        let paged = client.get_tasks_by_creator_paged(&admin, &50, &10);
+        assert_eq!(paged.len(), 1);
+    }
+
+    /// Verifies no duplicate task IDs appear anywhere in a creator's indexed
+    /// list when many tasks are created.
+    #[test]
+    fn test_no_duplicate_ids_in_creator_list() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        let n: u32 = 50;
+
+        for i in 0u32..n {
+            create_test_task(&client, &admin, &task_type, 1, 1_000_000 + i as u64);
+        }
+
+        // Retrieve all entries and check for duplicates.
+        let all = client.get_tasks_by_creator_paged(&admin, &0, &n);
+        assert_eq!(all.len(), n);
+
+        // Verify each expected ID appears exactly once.
+        for i in 0u32..n {
+            let id = all.get(i).unwrap();
+            assert_eq!(id, i as u64); // tasks were created 0..n in order
+        }
     }
 }

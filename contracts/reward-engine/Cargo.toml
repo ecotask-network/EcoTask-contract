@@ -9,8 +9,18 @@ doctest = false
 
 [dependencies]
 soroban-sdk = "26.0.1"
-eco-token = { path = "../eco-token" }
-task-registry = { path = "../task-registry" }
+# Shared Task/TaskStatus wire types. ecotask-types has no `#[contractimpl]`
+# blocks, so it emits no WASM exports and is safe to link into the contract
+# binary (unlike the eco-token/task-registry crates below).
+ecotask-types = { path = "../ecotask-types" }
 
+# The eco-token and task-registry crates are intentionally dev-only
+# dependencies. Their `#[contractimpl]` blocks generate `#[no_mangle]`
+# exports; linking either rlib into the reward-engine WASM binary would
+# collide with this contract's own exports (duplicate symbols such as
+# `accept_admin`/`transfer_admin`) and break the build. Production code
+# talks to both contracts through raw `invoke_contract`.
 [dev-dependencies]
 soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+eco-token = { path = "../eco-token" }
+task-registry = { path = "../task-registry" }

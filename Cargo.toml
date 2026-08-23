@@ -1,5 +1,10 @@
 [workspace]
-members = ["contracts/eco-token", "contracts/task-registry", "contracts/reward-engine"]
+members = [
+    "contracts/eco-token",
+    "contracts/ecotask-types",
+    "contracts/task-registry",
+    "contracts/reward-engine",
+]
 resolver = "2"
 
 [package]

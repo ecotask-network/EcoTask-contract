@@ -1,4 +1,4 @@
-.PHONY: all build test fmt lint clean deploy-testnet
+.PHONY: all build test bench fmt lint clean deploy-testnet
 
 all: build test lint fmt
 
@@ -7,6 +7,11 @@ build:
 
 test:
 	cargo test --workspace
+
+# Run only the Soroban budget / footprint benchmark tests and show their output.
+# Limits are documented in tests/reward_integration_test.rs.
+bench:
+	cargo test --workspace budget -- --nocapture
 
 fmt:
 	cargo fmt --all -- --check

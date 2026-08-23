@@ -23,7 +23,7 @@
                   "string": "tree-planting"
                 },
                 {
-                  "bytes": "79ffdcf166f67eaa8419e500ad739ce028b01f2969f4d59fef4cd1fb82f5ed08"
+                  "bytes": "c857e20602dc6d61516026f511f225f8c09905ee499fe272d51fc286c70c2f30"
                 },
                 {
                   "i128": "1000"
@@ -158,7 +158,37 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "CreatorTasks"
+                    "symbol": "CreatorTask"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                  },
+                  {
+                    "u64": "0"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "0"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "CreatorTaskCount"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -167,11 +197,7 @@
               },
               "durability": "persistent",
               "val": {
-                "vec": [
-                  {
-                    "u64": "0"
-                  }
-                ]
+                "u64": "1"
               }
             }
           },
@@ -244,7 +270,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "79ffdcf166f67eaa8419e500ad739ce028b01f2969f4d59fef4cd1fb82f5ed08"
+                      "bytes": "c857e20602dc6d61516026f511f225f8c09905ee499fe272d51fc286c70c2f30"
                     }
                   },
                   {
