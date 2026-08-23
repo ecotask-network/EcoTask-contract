@@ -1,6 +1,6 @@
 use crate::{access, storage};
+pub use ecotask_types::{Task, TaskStatus};
 use soroban_sdk::{contract, contractevent, contractimpl, Address, BytesN, Env, String};
-pub use storage::{Task, TaskStatus};
 
 #[contractevent]
 #[derive(Clone, Debug, Eq, PartialEq)]

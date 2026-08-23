@@ -9,6 +9,7 @@ doctest = false
 
 [dependencies]
 soroban-sdk = "26.0.1"
+ecotask-types = { path = "../ecotask-types" }
 
 [dev-dependencies]
 soroban-sdk = { version = "26.0.1", features = ["testutils"] }

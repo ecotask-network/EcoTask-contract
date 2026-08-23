@@ -1,28 +1,5 @@
-use soroban_sdk::{contracttype, Address, BytesN, Env, String, Vec};
-
-#[derive(Clone, Debug, PartialEq)]
-#[contracttype]
-pub enum TaskStatus {
-    Active,
-    Completed,
-    Expired,
-    Cancelled,
-}
-
-#[derive(Clone, Debug)]
-#[contracttype]
-pub struct Task {
-    pub id: u64,
-    pub creator: Address,
-    pub task_type: String,
-    pub location_hash: BytesN<32>,
-    pub reward_amount: i128,
-    pub max_completions: u32,
-    pub completions: u32,
-    pub status: TaskStatus,
-    pub created_at: u64,
-    pub expires_at: u64,
-}
+use ecotask_types::Task;
+use soroban_sdk::{contracttype, Address, Env, Vec};
 
 #[derive(Clone, Debug)]
 #[contracttype]

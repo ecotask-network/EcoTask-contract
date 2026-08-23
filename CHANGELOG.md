@@ -46,17 +46,23 @@ Error strings:
 
 - `engine: task max completions reached`
 
-- **[#72] Fix `reward-engine` WASM build: remove cross-contract crate
-  dependencies.** The `eco-token` and `task-registry` crates are now
-  dev-only dependencies. Their `#[contractimpl]` blocks emit `#[no_mangle]`
+- **[#71] Fix `reward-engine` WASM build and share contract types.** The
+  `eco-token` and `task-registry` crates are now dev-only dependencies of
+  the reward-engine. Their `#[contractimpl]` blocks emit `#[no_mangle]`
   exports, so linking either rlib into the reward-engine WASM binary
   produced duplicate symbols (`accept_admin`, `propose_admin`,
   `transfer_admin`) and `cargo build --target wasm32v1-none --release`
   failed. Production code already calls both contracts via raw
-  `invoke_contract`; the registry's `Task`/`TaskStatus` are now decoded
-  through local `#[contracttype]` mirror types in `verification.rs` that
-  match the registry's wire format (field/variant order). Public contract
-  ABI and storage layout are unchanged.
+  `invoke_contract`; the shared `Task`/`TaskStatus` wire types now live in
+  a new `ecotask-types` crate (no `#[contractimpl]`, so no exports) used
+  by both the task-registry and reward-engine. Public contract ABI and
+  storage layout are unchanged.
+
+#### `scripts`
+
+- `deploy.sh` now builds the requested contract first and fails fast if no
+  (non-empty) WASM artifact is produced, so a stale or missing build can
+  never be deployed.
 
 #### `task-registry`
 

@@ -1,44 +1,9 @@
 use crate::storage;
+use ecotask_types::{Task, TaskStatus};
 use soroban_sdk::{
-    contract, contractevent, contractimpl, contracttype, vec, Address, BytesN, Env, IntoVal,
-    String, Symbol, Val,
+    contract, contractevent, contractimpl, vec, Address, BytesN, Env, IntoVal, String, Symbol, Val,
 };
 pub use storage::{Verification, VerificationStatus};
-
-/// Mirror of `task_registry::TaskStatus` used to decode `get_task` results.
-///
-/// The reward-engine deliberately does not link the task-registry crate (see
-/// Cargo.toml): its `#[contractimpl]` exports would collide with this
-/// contract's own WASM exports. Soroban `#[contracttype]` values are encoded
-/// by variant/field order, not names, so a local mirror with the identical
-/// shape deserializes the registry's values transparently. Keep the variant
-/// order in sync with `task-registry/src/storage.rs`.
-#[derive(Clone, Debug, PartialEq)]
-#[contracttype]
-pub enum TaskStatus {
-    Active,
-    Completed,
-    Expired,
-    Cancelled,
-}
-
-/// Mirror of `task_registry::Task` — see `TaskStatus` above for why this
-/// exists. Keep the field order and types in sync with
-/// `task-registry/src/storage.rs`; the field names are for readability only.
-#[derive(Clone, Debug)]
-#[contracttype]
-pub struct Task {
-    pub id: u64,
-    pub creator: Address,
-    pub task_type: String,
-    pub location_hash: BytesN<32>,
-    pub reward_amount: i128,
-    pub max_completions: u32,
-    pub completions: u32,
-    pub status: TaskStatus,
-    pub created_at: u64,
-    pub expires_at: u64,
-}
 
 /// Maximum allowed length for a proof CID string (covers CIDv1 + multihash).
 const MAX_CID_LEN: u32 = 128;
