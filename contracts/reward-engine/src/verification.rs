@@ -195,8 +195,17 @@ fn record_reward_ledger(e: &Env, user: &Address) {
     storage::write_last_reward_ledger(e, user, current_ledger);
 }
 
-/// Collects up to `limit` pending verifications starting at offset `cursor`
-/// into the *pending-only* linked list.
+/// Collects up to `limit` pending verifications whose sequence number is
+/// greater than `cursor` from the *pending-only* linked list.
+///
+/// Every verification is assigned an immutable, monotonically-increasing
+/// `seq` at submit time. `cursor` is the sequence number of the last
+/// verification already returned (0 for the first page), so a page returns
+/// every pending verification with `seq > cursor`. Because `seq` values
+/// never change, resolving (approving, rejecting, or disputing) an entry
+/// between pages can never shift another entry past the cursor: the same
+/// pending verification is never skipped or returned twice, no matter how
+/// many resolutions happen mid-pagination.
 ///
 /// Resolved verifications are removed from the pending list entirely, so
 /// walking it never scans resolved records: each result costs O(1) storage
@@ -206,34 +215,30 @@ fn record_reward_ledger(e: &Env, user: &Address) {
 /// # Arguments
 ///
 /// * `e` - The Soroban environment
-/// * `cursor` - The zero-based offset into the pending-only set
+/// * `cursor` - The last sequence number already consumed (0 for the first page)
 /// * `limit` - The maximum number of verifications to return
 ///
 /// # Returns
 ///
-/// A vector of pending verification records.
-fn collect_pending(e: &Env, cursor: u32, limit: u32) -> soroban_sdk::Vec<Verification> {
+/// A vector of pending verification records with `seq > cursor`.
+fn collect_pending(e: &Env, cursor: u64, limit: u32) -> soroban_sdk::Vec<Verification> {
     let mut result: soroban_sdk::Vec<Verification> = soroban_sdk::Vec::new(e);
     let state = storage::read_pending_list(e);
     let mut current = state.head;
-    // Advance to the requested offset within the pending-only list.
-    let mut skip = cursor;
-    while skip > 0 {
-        current = match current {
-            Some(key) => storage::read_pending_node_next(e, &key),
-            None => break,
-        };
-        skip -= 1;
-    }
     let mut collected: u32 = 0;
     while collected < limit {
         let key = match current {
             Some(k) => k,
             None => break,
         };
+        // Stable cursor: skip verifications already returned (seq <= cursor).
+        // A node's seq is assigned once at submit time and never changes, so
+        // entries removed by resolution never shift others past the cursor.
         if let Some(v) = storage::read_verification(e, key.task_id, &key.user) {
-            result.push_back(v);
-            collected += 1;
+            if v.seq > cursor {
+                result.push_back(v);
+                collected += 1;
+            }
         }
         current = storage::read_pending_node_next(e, &key);
     }
@@ -649,6 +654,7 @@ impl RewardEngine {
             submitted_at: e.ledger().timestamp(),
             resolved_at: None,
             oracle: oracle.clone(),
+            seq: storage::next_verification_seq(&e),
         };
 
         storage::write_verification(&e, task_id, &user, &verification);
@@ -942,26 +948,41 @@ impl RewardEngine {
         }
     }
 
-    /// Returns up to `limit` pending verifications starting from `cursor`.
+    /// Returns up to `limit` pending verifications whose sequence number is
+    /// greater than `cursor`.
     ///
-    /// `cursor` is a zero-based offset into the *pending-only* set: resolved
-    /// verifications are removed from the pending list, so a page is served
-    /// without scanning the historical verification log. This is a change
-    /// from the earlier offset-into-the-full-log semantics — callers that
-    /// persisted a cursor across resolutions must re-anchor it (e.g. by
-    /// restarting from 0).
+    /// Every verification carries an immutable, monotonically-increasing
+    /// `seq` assigned at submit time. `cursor` is the sequence number of the
+    /// last verification already returned (pass 0 for the first page); fetch
+    /// the next page with the `seq` of the last returned verification.
+    /// Because `seq` values are immutable and unique, resolving an entry
+    /// between pages can never shift or reorder the remaining entries — each
+    /// pending verification is returned exactly once across the whole
+    /// pagination, even when approvals, rejections, or disputes happen
+    /// mid-pagination.
+    ///
+    /// # Migration note (breaking API change)
+    ///
+    /// `cursor` was previously a zero-based *offset* into the pending-only
+    /// set. An offset cursor is unstable: when an entry is resolved it is
+    /// removed from the pending list, every later entry shifts left by one,
+    /// and a caller resuming from a saved offset silently skips an entry.
+    /// The cursor is now a sequence number. Persisted offset cursors are
+    /// invalid and must be re-anchored — restart from 0, or read `seq` off
+    /// the last record already processed.
     ///
     /// # Arguments
     ///
-    /// * `cursor` - The starting offset into the pending-only set (zero-based)
+    /// * `cursor` - The sequence number of the last verification already
+    ///   returned; 0 returns from the beginning
     /// * `limit` - The maximum number of verifications to return
     ///
     /// # Returns
     ///
-    /// A vector of pending verification records.
+    /// A vector of pending verification records with `seq > cursor`.
     pub fn get_pending_verifications_paged(
         e: Env,
-        cursor: u32,
+        cursor: u64,
         limit: u32,
     ) -> soroban_sdk::Vec<Verification> {
         collect_pending(&e, cursor, limit)
@@ -2025,15 +2046,18 @@ mod test {
         let p3 = String::from_str(&e, "QmPage3");
         client.submit_proof(&oracle, &user3, &task_id, &p3);
 
-        // First page of 2
+        // First page of 2, starting from seq 0 (the beginning).
         let page0 = client.get_pending_verifications_paged(&0, &2);
         assert_eq!(page0.len(), 2);
+        assert_eq!(page0.get(0).unwrap().seq, 1);
+        assert_eq!(page0.get(1).unwrap().seq, 2);
 
-        // Second page of 2 -> only 1 remains
+        // Resume from the last returned seq (2) -> only seq 3 remains.
         let page1 = client.get_pending_verifications_paged(&2, &2);
         assert_eq!(page1.len(), 1);
+        assert_eq!(page1.get(0).unwrap().seq, 3);
 
-        // Cursor past the end -> empty
+        // Cursor past the highest seq -> empty.
         let page2 = client.get_pending_verifications_paged(&10, &2);
         assert_eq!(page2.len(), 0);
     }
@@ -2087,10 +2111,78 @@ mod test {
         assert_eq!(pending.get(0).unwrap().user, user1);
         assert_eq!(pending.get(1).unwrap().user, user3);
 
-        // Offset pagination into the pending-only set still works.
+        // Seq-based pagination into the pending-only set still works:
+        // cursor 1 (last seen seq) skips user1 (seq 1) and returns user3
+        // (seq 3).
         let page = client.get_pending_verifications_paged(&1, &5);
         assert_eq!(page.len(), 1);
         assert_eq!(page.get(0).unwrap().user, user3);
+    }
+
+    #[test]
+    fn test_pagination_stable_across_resolutions() {
+        let (e, admin, oracle, user1, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let users = [
+            user1,
+            Address::generate(&e),
+            Address::generate(&e),
+            Address::generate(&e),
+            Address::generate(&e),
+            Address::generate(&e),
+        ];
+        let cids = [
+            "QmStable0",
+            "QmStable1",
+            "QmStable2",
+            "QmStable3",
+            "QmStable4",
+            "QmStable5",
+        ];
+
+        // Submit 6 proofs; they receive seqs 1..=6 in submission order.
+        for (i, user) in users.iter().enumerate() {
+            let cid = String::from_str(&e, cids[i]);
+            client.submit_proof(&oracle, user, &task_id, &cid);
+        }
+
+        // Page 0 returns seqs 1 and 2; resume from the last returned seq.
+        let page0 = client.get_pending_verifications_paged(&0, &2);
+        assert_eq!(page0.len(), 2);
+        assert_eq!(page0.get(0).unwrap().seq, 1);
+        assert_eq!(page0.get(1).unwrap().seq, 2);
+        let mut cursor = page0.get(1).unwrap().seq;
+
+        // Resolve two entries between pages: reject the middle one (seq 3)
+        // and dispute the tail one (seq 6). A raw index cursor would shift
+        // seqs 4 and 5 left and silently skip seq 4; the seq cursor must be
+        // unaffected by either resolution.
+        client.reject_proof(&oracle, &users[2], &task_id);
+        client.dispute_proof(&admin, &users[5], &task_id);
+
+        // Page 1 resumes at seq 2: it must return seqs 4 and 5 — exactly
+        // once, with no skips caused by the mid-pagination resolutions.
+        let page1 = client.get_pending_verifications_paged(&cursor, &2);
+        assert_eq!(page1.len(), 2);
+        assert_eq!(page1.get(0).unwrap().seq, 4);
+        assert_eq!(page1.get(1).unwrap().seq, 5);
+        cursor = page1.get(1).unwrap().seq;
+
+        // Page 2: nothing left (seq 6 was disputed and removed from the
+        // pending set).
+        let page2 = client.get_pending_verifications_paged(&cursor, &2);
+        assert_eq!(page2.len(), 0);
+
+        // The unbounded view returns exactly the remaining pending set, in
+        // submission order (seqs 1, 2, 4, 5 — the rejected and disputed
+        // entries are gone).
+        let pending = client.get_pending_verifications();
+        assert_eq!(pending.len(), 4);
+        assert_eq!(pending.get(0).unwrap().seq, 1);
+        assert_eq!(pending.get(1).unwrap().seq, 2);
+        assert_eq!(pending.get(2).unwrap().seq, 4);
+        assert_eq!(pending.get(3).unwrap().seq, 5);
     }
 
     #[test]

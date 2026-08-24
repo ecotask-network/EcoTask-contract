@@ -88,6 +88,31 @@ Error strings:
   **Storage layout change:** existing deployed state requires a fresh
   deployment (testnet only; acceptable per the issue).
 
+- **[#74] Make `get_pending_verifications_paged` cursors stable across
+  resolutions.** The cursor was a zero-based offset into the pending-only
+  set, which shrinks whenever a verification is resolved:
+  `approve_proof`, `reject_proof`, or `dispute_proof` removes the entry,
+  shifting every later entry left by one, so an oracle or backend resuming
+  from a saved offset silently skipped or re-processed entries whenever a
+  resolution happened mid-pagination. Every verification now carries an
+  immutable, monotonically-increasing `seq` assigned at submit time, and
+  the cursor is "the last seq already returned": a page returns pending
+  verifications with `seq > cursor`, which no resolution can shift or
+  reorder. The returned `Verification` struct exposes `seq` so callers can
+  resume with the last record's value.
+
+  **Pagination contract change (breaking):** `cursor` changed from a
+  `u32` offset to a `u64` sequence number, and `Verification` gained a
+  `seq: u64` field. Persisted offset cursors are invalid and must be
+  re-anchored — restart from 0 or read `seq` off the last record already
+  processed.
+
+  New storage:
+
+  | Scope | Key | Value | Purpose |
+  |-------|-----|-------|---------|
+  | Instance | `DataKey::VerificationSeq` | `u64` | next verification sequence number to assign |
+
 #### `scripts`
 
 - `deploy.sh` now builds the requested contract first and fails fast if no

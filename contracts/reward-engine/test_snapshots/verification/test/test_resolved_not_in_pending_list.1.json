@@ -49,7 +49,7 @@
                   "string": "tree-planting"
                 },
                 {
-                  "bytes": "d3a97e8df382456365b79d6707d1c5734ca60af1b600467432ea1cae67b70e82"
+                  "bytes": "7734366c00794a4670aea75357ea77b3f717728a61979ba292df80a316d9b66c"
                 },
                 {
                   "i128": "1000"
@@ -724,7 +724,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "d3a97e8df382456365b79d6707d1c5734ca60af1b600467432ea1cae67b70e82"
+                      "bytes": "7734366c00794a4670aea75357ea77b3f717728a61979ba292df80a316d9b66c"
                     }
                   },
                   {
@@ -988,7 +988,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "UserVerifications"
+                    "symbol": "UserVerificationCount"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -997,11 +997,7 @@
               },
               "durability": "persistent",
               "val": {
-                "vec": [
-                  {
-                    "u64": "0"
-                  }
-                ]
+                "u64": "1"
               }
             }
           },
@@ -1019,7 +1015,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "UserVerifications"
+                    "symbol": "UserVerificationCount"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
@@ -1028,11 +1024,7 @@
               },
               "durability": "persistent",
               "val": {
-                "vec": [
-                  {
-                    "u64": "0"
-                  }
-                ]
+                "u64": "1"
               }
             }
           },
@@ -1050,7 +1042,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "UserVerifications"
+                    "symbol": "UserVerificationCount"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
@@ -1059,11 +1051,97 @@
               },
               "durability": "persistent",
               "val": {
+                "u64": "1"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "key": {
                 "vec": [
+                  {
+                    "symbol": "UserVerificationIndex"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  },
                   {
                     "u64": "0"
                   }
                 ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "0"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "UserVerificationIndex"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAOLZM"
+                  },
+                  {
+                    "u64": "0"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "0"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "UserVerificationIndex"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAARQG5"
+                  },
+                  {
+                    "u64": "0"
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "0"
               }
             }
           },
@@ -1124,6 +1202,14 @@
                     },
                     "val": {
                       "i128": "1000"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "seq"
+                    },
+                    "val": {
+                      "u64": "1"
                     }
                   },
                   {
@@ -1227,6 +1313,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "seq"
+                    },
+                    "val": {
+                      "u64": "2"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "status"
                     },
                     "val": {
@@ -1324,6 +1418,14 @@
                   },
                   {
                     "key": {
+                      "symbol": "seq"
+                    },
+                    "val": {
+                      "u64": "3"
+                    }
+                  },
+                  {
+                    "key": {
                       "symbol": "status"
                     },
                     "val": {
@@ -1413,6 +1515,38 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "PendingListCount"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "PendingListHead"
+                          }
+                        ]
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "PendingListTail"
+                          }
+                        ]
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "Registry"
                           }
                         ]
@@ -1449,12 +1583,12 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "VerificationList"
+                            "symbol": "VerificationSeq"
                           }
                         ]
                       },
                       "val": {
-                        "vec": []
+                        "u64": "3"
                       }
                     }
                   ]

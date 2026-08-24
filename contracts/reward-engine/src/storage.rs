@@ -23,6 +23,10 @@ pub struct Verification {
     pub submitted_at: u64,
     pub resolved_at: Option<u64>,
     pub oracle: Address,
+    /// Monotonically-increasing sequence number assigned at submit time.
+    /// Never changes once set, so it is a stable pagination cursor: resolving
+    /// an entry can never shift another entry past a cursor.
+    pub seq: u64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,6 +67,7 @@ pub enum DataKey {
     PendingListCount,
     PendingListHead,
     PendingListTail,
+    VerificationSeq,
     PendingVerificationPrev(VerificationKey),
     PendingVerificationNext(VerificationKey),
     UserVerificationCount(Address),
@@ -511,6 +516,26 @@ pub fn remove_verification_key(e: &Env, task_id: u64, user: &Address) {
         .remove(&DataKey::PendingVerificationNext(key.clone()));
     state.count = state.count.saturating_sub(1);
     write_pending_list(e, &state);
+}
+
+/// Allocates the next monotonically-increasing verification sequence
+/// number. Sequence numbers are assigned once at submit time and never
+/// change, which makes them a stable pagination cursor: resolving an entry
+/// can never shift another entry past a cursor.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+///
+/// # Returns
+///
+/// The next sequence number to assign (1, 2, 3, ...).
+pub fn next_verification_seq(e: &Env) -> u64 {
+    let key = DataKey::VerificationSeq;
+    let seq: u64 = e.storage().instance().get(&key).unwrap_or(0);
+    let next = seq + 1;
+    e.storage().instance().set(&key, &next);
+    next
 }
 
 /// Returns the key the given pending node links to as `next`, or `None`

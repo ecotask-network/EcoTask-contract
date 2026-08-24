@@ -49,7 +49,7 @@
                   "string": "tree-planting"
                 },
                 {
-                  "bytes": "b53247b4eeefbb5df34a8f615787e8d1134665ecdd9570acb11054a2adc9212c"
+                  "bytes": "caebdbc73f99c76b18192003d9f1b871f4b2e8decbb477e10da55854dd671121"
                 },
                 {
                   "i128": "1000"
@@ -533,7 +533,7 @@
                       "symbol": "location_hash"
                     },
                     "val": {
-                      "bytes": "b53247b4eeefbb5df34a8f615787e8d1134665ecdd9570acb11054a2adc9212c"
+                      "bytes": "caebdbc73f99c76b18192003d9f1b871f4b2e8decbb477e10da55854dd671121"
                     }
                   },
                   {
@@ -709,7 +709,7 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "UserVerifications"
+                    "symbol": "UserVerificationCount"
                   },
                   {
                     "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
@@ -718,11 +718,37 @@
               },
               "durability": "persistent",
               "val": {
+                "u64": "1"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAMDR4",
+              "key": {
                 "vec": [
+                  {
+                    "symbol": "UserVerificationIndex"
+                  },
+                  {
+                    "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHK3M"
+                  },
                   {
                     "u64": "0"
                   }
                 ]
+              },
+              "durability": "persistent",
+              "val": {
+                "u64": "0"
               }
             }
           },
@@ -783,6 +809,14 @@
                     },
                     "val": {
                       "i128": "1000"
+                    }
+                  },
+                  {
+                    "key": {
+                      "symbol": "seq"
+                    },
+                    "val": {
+                      "u64": "1"
                     }
                   },
                   {
@@ -876,6 +910,38 @@
                       "key": {
                         "vec": [
                           {
+                            "symbol": "PendingListCount"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "PendingListHead"
+                          }
+                        ]
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "PendingListTail"
+                          }
+                        ]
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
                             "symbol": "Registry"
                           }
                         ]
@@ -912,12 +978,12 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "VerificationList"
+                            "symbol": "VerificationSeq"
                           }
                         ]
                       },
                       "val": {
-                        "vec": []
+                        "u64": "1"
                       }
                     }
                   ]

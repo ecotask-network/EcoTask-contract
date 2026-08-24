@@ -204,7 +204,7 @@ Submitted (Pending) ──► Approved (mints ECO)
 | `resolve_dispute(caller, user, task_id, approve, reward_amount)` | admin | Resolve a disputed proof |
 | `get_verification(task_id, user) → Verification` | — | Fetch verification details |
 | `get_pending_verifications() → Vec<Verification>` | — | List all pending verifications |
-| `get_pending_verifications_paged(cursor, limit) → Vec<Verification>` | — | Pageable list of pending verifications |
+| `get_pending_verifications_paged(cursor: u64, limit) → Vec<Verification>` | — | Pageable list of pending verifications (`cursor` = seq of the last returned item; `0` starts at the beginning) |
 | `get_verifications_by_user(user, cursor, limit) → Vec<Verification>` | — | Pageable history of a user's verifications |
 | `total_paid() → i128` | — | Cumulative ECO minted through this engine |
 | `pause(caller)` | admin | Emergency pause — blocks all proof operations |
@@ -238,6 +238,7 @@ pub struct Verification {
     pub submitted_at: u64,              // ledger timestamp
     pub resolved_at: Option<u64>,       // set on approve/reject/resolve
     pub oracle: Address,                // oracle that submitted the proof
+    pub seq: u64,                       // immutable submit-time sequence number; stable pagination cursor
 }
 ```
 
