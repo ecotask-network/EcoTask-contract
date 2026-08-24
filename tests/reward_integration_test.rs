@@ -625,6 +625,114 @@ fn setup_benchmark_env(
     (engine_client, reg_client, task_id)
 }
 
+/// Builds a deployed engine where `total` distinct users each submit one
+/// proof for a single shared task, then resolves the first `resolved` of
+/// them through the dispute → reject-resolution path (which leaves the
+/// records in the historical log but removes them from the pending set).
+///
+/// Returns the env, engine client, and task id.
+fn build_pending_stress_env(
+    total: usize,
+    resolved: usize,
+) -> (Env, reward_engine::RewardEngineClient<'static>, u64) {
+    let e = Env::default();
+    e.mock_all_auths_allowing_non_root_auth();
+
+    let admin = Address::generate(&e);
+    let oracle = Address::generate(&e);
+    let token_id = deploy_token(&e, &admin);
+    let reg_id = deploy_registry(&e, &admin);
+    let engine_id = deploy_engine(&e, &admin, &token_id, &reg_id, &oracle);
+
+    let engine_client = reward_engine::RewardEngineClient::new(&e, &engine_id);
+    let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+
+    let loc_hash = soroban_sdk::BytesN::<32>::random(&e);
+    let task_id = reg_client.create_task(
+        &admin,
+        &String::from_str(&e, "stress-pending"),
+        &loc_hash,
+        &1000,
+        &(total as u32),
+        &(e.ledger().timestamp() + 10000),
+    );
+
+    for i in 0..total {
+        let user = Address::generate(&e);
+        let proof = String::from_str(&e, &format!("QmStress{:04}", i));
+        engine_client.submit_proof(&oracle, &user, &task_id, &proof);
+        if i < resolved {
+            engine_client.dispute_proof(&admin, &user, &task_id);
+            engine_client.resolve_dispute(&admin, &user, &task_id, &false, &0);
+        }
+    }
+
+    (e, engine_client, task_id)
+}
+
+/// Stress test for pending-list pagination: 200 proofs are submitted and
+/// 180 are resolved, and a single `get_pending_verifications_paged(0, 20)`
+/// call returns exactly the 20 remaining pending verifications without
+/// scanning the resolved records.
+#[test]
+fn test_pending_pagination_does_not_scan_resolved_records() {
+    let total = 200usize;
+    let resolved = 180usize;
+    let pending = (total - resolved) as u32; // 20
+
+    // Resolved-heavy environment: 180 of the 200 verifications resolved.
+    let (e_resolved, client_resolved, _task_id) = build_pending_stress_env(total, resolved);
+    assert_eq!(client_resolved.get_pending_verifications().len(), pending);
+
+    // One paged call returns exactly `pending` entries. The budget is reset
+    // immediately beforehand so the measured cost covers only this call.
+    e_resolved.cost_estimate().budget().reset_default();
+    let page = client_resolved.get_pending_verifications_paged(&0, &pending);
+    assert_eq!(page.len(), pending);
+    let resolved_mem = e_resolved.cost_estimate().budget().memory_bytes_cost();
+    let resolved_cpu = e_resolved.cost_estimate().budget().cpu_instruction_cost();
+
+    println!("\n[test_pending_pagination_does_not_scan_resolved_records]");
+    println!("  paged(0, {}) with 180/200 resolved", pending);
+    println!(
+        "  CPU instructions : {:>12}   Memory bytes : {:>12}",
+        resolved_cpu, resolved_mem
+    );
+
+    // Baseline environment: all 200 verifications still pending. Serving the
+    // same 20-entry page must cost about the same as the resolved-heavy
+    // case — pagination walks only the pending list, so resolved history
+    // never enters the scan. A log-scanning implementation would read ~200
+    // records in the resolved-heavy case (≈10x the baseline), so a 3x bound
+    // is a clear regression guard while tolerating measurement noise.
+    let (e_clean, client_clean, _task_id) = build_pending_stress_env(total, 0);
+    e_clean.cost_estimate().budget().reset_default();
+    let _ = client_clean.get_pending_verifications_paged(&0, &pending);
+    let clean_mem = e_clean.cost_estimate().budget().memory_bytes_cost();
+    let clean_cpu = e_clean.cost_estimate().budget().cpu_instruction_cost();
+
+    println!("  paged(0, {}) with 0/200 resolved (baseline)", pending);
+    println!(
+        "  CPU instructions : {:>12}   Memory bytes : {:>12}",
+        clean_cpu, clean_mem
+    );
+
+    assert!(
+        resolved_mem <= clean_mem * 3,
+        "paged call in the resolved-heavy env used {} memory bytes vs {} in the \
+         all-pending baseline — it appears to be scanning resolved records",
+        resolved_mem,
+        clean_mem
+    );
+    assert!(
+        resolved_cpu <= clean_cpu * 3,
+        "paged call in the resolved-heavy env used {} CPU instructions vs {} in \
+         the all-pending baseline — it appears to be scanning resolved records",
+        resolved_cpu,
+        clean_cpu
+    );
+}
+
 /// Measures CPU instructions and memory bytes consumed by
 /// `submit_proof` + `approve_proof` (the hot path) and asserts
 /// both are below 50% of the Stellar mainnet per-transaction limits.

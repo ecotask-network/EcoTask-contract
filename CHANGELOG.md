@@ -58,6 +58,36 @@ Error strings:
   by both the task-registry and reward-engine. Public contract ABI and
   storage layout are unchanged.
 
+- **[#61] Replace the unbounded `VerificationList` Vec with a doubly-linked
+  pending list and the `UserVerifications` Vec with a per-user sequence
+  index.** The global pending set previously lived as a single growing
+  `Vec<VerificationKey>` in instance storage: every `submit_proof` or
+  resolution deserialised and rewrote the entire list,
+  `remove_verification_key` was an O(n) scan with no cap, and
+  `get_pending_verifications_paged` skipped resolved entries in the
+  historical log, so oracle polling degraded with total history. The new
+  storage layout is:
+
+  | Scope | Key | Value | Purpose |
+  |-------|-----|-------|---------|
+  | Instance | `DataKey::PendingListCount` | `u64` | number of pending verifications |
+  | Instance | `DataKey::PendingListHead` | `Option<VerificationKey>` | head of the pending list |
+  | Instance | `DataKey::PendingListTail` | `Option<VerificationKey>` | tail of the pending list |
+  | Persistent | `DataKey::PendingVerificationPrev(VerificationKey)` | `Option<VerificationKey>` | previous node link |
+  | Persistent | `DataKey::PendingVerificationNext(VerificationKey)` | `Option<VerificationKey>` | next node link |
+  | Persistent | `DataKey::UserVerificationCount(Address)` | `u64` | number of verifications for that user |
+  | Persistent | `DataKey::UserVerificationIndex(Address, u64)` | `u64` | task id at the given 0-based index |
+
+  `push_verification_key` / `remove_verification_key` are now O(1) pointer
+  operations (a fixed number of storage ops regardless of history size),
+  and `get_pending_verifications_paged` walks only pending nodes — resolved
+  records are never scanned.
+
+  **Pagination contract change:** `cursor` is now an offset into the
+  *pending-only* set instead of an offset into the full verification log.
+  **Storage layout change:** existing deployed state requires a fresh
+  deployment (testnet only; acceptable per the issue).
+
 #### `scripts`
 
 - `deploy.sh` now builds the requested contract first and fails fast if no

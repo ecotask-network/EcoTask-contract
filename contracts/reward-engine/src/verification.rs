@@ -196,31 +196,46 @@ fn record_reward_ledger(e: &Env, user: &Address) {
 }
 
 /// Collects up to `limit` pending verifications starting at offset `cursor`
-/// into the full verification log, skipping already-resolved entries.
+/// into the *pending-only* linked list.
+///
+/// Resolved verifications are removed from the pending list entirely, so
+/// walking it never scans resolved records: each result costs O(1) storage
+/// reads regardless of how many verifications have ever been submitted or
+/// resolved.
 ///
 /// # Arguments
 ///
 /// * `e` - The Soroban environment
-/// * `cursor` - The starting offset into the verification list
+/// * `cursor` - The zero-based offset into the pending-only set
 /// * `limit` - The maximum number of verifications to return
 ///
 /// # Returns
 ///
 /// A vector of pending verification records.
 fn collect_pending(e: &Env, cursor: u32, limit: u32) -> soroban_sdk::Vec<Verification> {
-    let keys = storage::read_verification_keys(e);
     let mut result: soroban_sdk::Vec<Verification> = soroban_sdk::Vec::new(e);
-    let mut idx = cursor;
+    let state = storage::read_pending_list(e);
+    let mut current = state.head;
+    // Advance to the requested offset within the pending-only list.
+    let mut skip = cursor;
+    while skip > 0 {
+        current = match current {
+            Some(key) => storage::read_pending_node_next(e, &key),
+            None => break,
+        };
+        skip -= 1;
+    }
     let mut collected: u32 = 0;
-    while idx < keys.len() && collected < limit {
-        let key = keys.get(idx).unwrap();
+    while collected < limit {
+        let key = match current {
+            Some(k) => k,
+            None => break,
+        };
         if let Some(v) = storage::read_verification(e, key.task_id, &key.user) {
-            if v.status == VerificationStatus::Pending {
-                result.push_back(v);
-                collected += 1;
-            }
+            result.push_back(v);
+            collected += 1;
         }
-        idx += 1;
+        current = storage::read_pending_node_next(e, &key);
     }
     result
 }
@@ -927,13 +942,18 @@ impl RewardEngine {
         }
     }
 
-    /// Returns up to `limit` pending verifications starting from `cursor`
-    /// (a zero-based offset into the full verification log). Bounded reads
-    /// make this safe for off-chain indexers to paginate at scale.
+    /// Returns up to `limit` pending verifications starting from `cursor`.
+    ///
+    /// `cursor` is a zero-based offset into the *pending-only* set: resolved
+    /// verifications are removed from the pending list, so a page is served
+    /// without scanning the historical verification log. This is a change
+    /// from the earlier offset-into-the-full-log semantics — callers that
+    /// persisted a cursor across resolutions must re-anchor it (e.g. by
+    /// restarting from 0).
     ///
     /// # Arguments
     ///
-    /// * `cursor` - The starting offset (zero-based)
+    /// * `cursor` - The starting offset into the pending-only set (zero-based)
     /// * `limit` - The maximum number of verifications to return
     ///
     /// # Returns
@@ -957,7 +977,8 @@ impl RewardEngine {
     }
 
     /// Pageable history of a single user's verifications across all tasks,
-    /// ordered by submission.
+    /// ordered by submission. Reads only the requested page of the user's
+    /// sequence index — never the user's full history.
     ///
     /// # Arguments
     ///
@@ -974,14 +995,18 @@ impl RewardEngine {
         cursor: u32,
         limit: u32,
     ) -> soroban_sdk::Vec<Verification> {
-        let tasks = storage::read_user_verification_tasks(&e, &user);
-        let start = cursor.min(tasks.len());
-        let end = (start + limit).min(tasks.len());
+        let count = storage::read_user_verification_count(&e, &user);
+        let start = (cursor as u64).min(count);
+        let end = start.saturating_add(limit as u64).min(count);
         let mut result: soroban_sdk::Vec<Verification> = soroban_sdk::Vec::new(&e);
-        for task_id in tasks.slice(start..end).iter() {
-            if let Some(v) = storage::read_verification(&e, task_id, &user) {
-                result.push_back(v);
+        let mut seq = start;
+        while seq < end {
+            if let Some(task_id) = storage::read_user_verification_task(&e, &user, seq) {
+                if let Some(v) = storage::read_verification(&e, task_id, &user) {
+                    result.push_back(v);
+                }
             }
+            seq += 1;
         }
         result
     }
@@ -2031,6 +2056,41 @@ mod test {
         let page = client.get_pending_verifications_paged(&0, &10);
         assert_eq!(page.len(), 1);
         assert_eq!(page.get(0).unwrap().user, user2);
+    }
+
+    #[test]
+    fn test_pending_list_removal_surgery_preserves_pagination() {
+        let (e, _admin, oracle, user1, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let user2 = Address::generate(&e);
+        let user3 = Address::generate(&e);
+        let user4 = Address::generate(&e);
+
+        let p1 = String::from_str(&e, "QmSurgery1");
+        client.submit_proof(&oracle, &user1, &task_id, &p1);
+        let p2 = String::from_str(&e, "QmSurgery2");
+        client.submit_proof(&oracle, &user2, &task_id, &p2);
+        let p3 = String::from_str(&e, "QmSurgery3");
+        client.submit_proof(&oracle, &user3, &task_id, &p3);
+        let p4 = String::from_str(&e, "QmSurgery4");
+        client.submit_proof(&oracle, &user4, &task_id, &p4);
+
+        // Remove a middle node (user2) and the tail node (user4) via
+        // rejection; the remaining list [user1, user3] must stay connected
+        // and in submission order.
+        client.reject_proof(&oracle, &user2, &task_id);
+        client.reject_proof(&oracle, &user4, &task_id);
+
+        let pending = client.get_pending_verifications();
+        assert_eq!(pending.len(), 2);
+        assert_eq!(pending.get(0).unwrap().user, user1);
+        assert_eq!(pending.get(1).unwrap().user, user3);
+
+        // Offset pagination into the pending-only set still works.
+        let page = client.get_pending_verifications_paged(&1, &5);
+        assert_eq!(page.len(), 1);
+        assert_eq!(page.get(0).unwrap().user, user3);
     }
 
     #[test]

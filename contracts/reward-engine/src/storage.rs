@@ -25,6 +25,30 @@ pub struct Verification {
     pub oracle: Address,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+#[contracttype]
+pub struct VerificationKey {
+    pub task_id: u64,
+    pub user: Address,
+}
+
+/// In-memory aggregate of the pending-list instance state (count plus
+/// head/tail pointers).
+///
+/// This type is never serialized: its three fields are stored as three
+/// fixed-size instance entries, so the stored state stays constant-size
+/// regardless of how many verifications exist. The global pending set is
+/// a doubly-linked list so that `push_verification_key` /
+/// `remove_verification_key` are O(1) pointer operations and pagination
+/// walks only pending entries, never resolved ones. The per-verification
+/// prev/next links live in persistent storage.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PendingListState {
+    pub count: u64,
+    pub head: Option<VerificationKey>,
+    pub tail: Option<VerificationKey>,
+}
+
 #[derive(Clone, Debug)]
 #[contracttype]
 pub enum DataKey {
@@ -36,20 +60,18 @@ pub enum DataKey {
     CidHash(BytesN<32>),
     MinReward,
     MaxReward,
-    VerificationList,
-    UserVerifications(Address),
+    PendingListCount,
+    PendingListHead,
+    PendingListTail,
+    PendingVerificationPrev(VerificationKey),
+    PendingVerificationNext(VerificationKey),
+    UserVerificationCount(Address),
+    UserVerificationIndex(Address, u64),
     TotalPaid,
     Paused,
     UserCooldown,
     LastRewardLedger(Address),
     PendingAdmin,
-}
-
-#[derive(Clone, Debug)]
-#[contracttype]
-pub struct VerificationKey {
-    pub task_id: u64,
-    pub user: Address,
 }
 
 /// Writes the admin address to instance storage.
@@ -335,43 +357,8 @@ pub fn read_max_reward(e: &Env) -> Option<i128> {
     e.storage().instance().get(&DataKey::MaxReward)
 }
 
-/// Adds a verification key to the global verification list.
-///
-/// # Arguments
-///
-/// * `e` - The Soroban environment
-/// * `task_id` - The ID of the task
-/// * `user` - The user address
-pub fn push_verification_key(e: &Env, task_id: u64, user: &Address) {
-    let key = DataKey::VerificationList;
-    let mut list: Vec<VerificationKey> = e.storage().instance().get(&key).unwrap_or(Vec::new(e));
-    list.push_back(VerificationKey {
-        task_id,
-        user: user.clone(),
-    });
-    e.storage().instance().set(&key, &list);
-}
-
-/// Removes a verification key from the global verification list.
-///
-/// # Arguments
-///
-/// * `e` - The Soroban environment
-/// * `task_id` - The ID of the task
-/// * `user` - The user address
-pub fn remove_verification_key(e: &Env, task_id: u64, user: &Address) {
-    let key = DataKey::VerificationList;
-    let list: Vec<VerificationKey> = e.storage().instance().get(&key).unwrap_or(Vec::new(e));
-    let mut filtered: Vec<VerificationKey> = Vec::new(e);
-    for item in list.iter() {
-        if item.task_id != task_id || item.user != *user {
-            filtered.push_back(item);
-        }
-    }
-    e.storage().instance().set(&key, &filtered);
-}
-
-/// Reads all verification keys from the global verification list.
+/// Reads the fixed-size state of the pending-verification linked list
+/// (count plus head/tail pointers) from instance storage.
 ///
 /// # Arguments
 ///
@@ -379,13 +366,176 @@ pub fn remove_verification_key(e: &Env, task_id: u64, user: &Address) {
 ///
 /// # Returns
 ///
-/// A vector of all verification keys, or an empty vector if none exist.
-pub fn read_verification_keys(e: &Env) -> Vec<VerificationKey> {
-    let key = DataKey::VerificationList;
-    e.storage().instance().get(&key).unwrap_or(Vec::new(e))
+/// The current pending-list state, or an empty state if none exists.
+pub fn read_pending_list(e: &Env) -> PendingListState {
+    PendingListState {
+        count: e
+            .storage()
+            .instance()
+            .get(&DataKey::PendingListCount)
+            .unwrap_or(0),
+        head: e
+            .storage()
+            .instance()
+            .get(&DataKey::PendingListHead)
+            .unwrap_or(None),
+        tail: e
+            .storage()
+            .instance()
+            .get(&DataKey::PendingListTail)
+            .unwrap_or(None),
+    }
 }
 
-/// Adds a task ID to a user's list of verification tasks.
+/// Persists the fixed-size state of the pending-verification linked list.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `state` - The pending-list state to store
+fn write_pending_list(e: &Env, state: &PendingListState) {
+    e.storage()
+        .instance()
+        .set(&DataKey::PendingListCount, &state.count);
+    e.storage()
+        .instance()
+        .set(&DataKey::PendingListHead, &state.head);
+    e.storage()
+        .instance()
+        .set(&DataKey::PendingListTail, &state.tail);
+}
+
+/// Appends a verification key to the tail of the pending list.
+///
+/// This is a doubly-linked-list append: it touches only the tail node's
+/// links and the fixed-size list state, so its cost is bounded to a
+/// constant number of storage operations regardless of how many
+/// verifications exist.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `task_id` - The ID of the task
+/// * `user` - The user address
+pub fn push_verification_key(e: &Env, task_id: u64, user: &Address) {
+    let key = VerificationKey {
+        task_id,
+        user: user.clone(),
+    };
+    let mut state = read_pending_list(e);
+    match state.tail.clone() {
+        None => {
+            // First pending verification: it is both head and tail.
+            e.storage().persistent().set(
+                &DataKey::PendingVerificationPrev(key.clone()),
+                &None::<VerificationKey>,
+            );
+            e.storage().persistent().set(
+                &DataKey::PendingVerificationNext(key.clone()),
+                &None::<VerificationKey>,
+            );
+            state.head = Some(key.clone());
+            state.tail = Some(key);
+        }
+        Some(tail_key) => {
+            // Append after the current tail: point the old tail's `next`
+            // at the new node and record the new node's `prev` back to it.
+            e.storage().persistent().set(
+                &DataKey::PendingVerificationNext(tail_key.clone()),
+                &Some(key.clone()),
+            );
+            e.storage().persistent().set(
+                &DataKey::PendingVerificationPrev(key.clone()),
+                &Some(tail_key.clone()),
+            );
+            e.storage().persistent().set(
+                &DataKey::PendingVerificationNext(key.clone()),
+                &None::<VerificationKey>,
+            );
+            state.tail = Some(key);
+        }
+    }
+    state.count += 1;
+    write_pending_list(e, &state);
+}
+
+/// Removes a verification key from the pending list via O(1) pointer
+/// surgery: it updates the removed node's neighbours and the fixed-size
+/// list state without ever deserialising the whole list. If the key is not
+/// currently in the pending list (e.g. a dispute already removed it), this
+/// is a no-op.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `task_id` - The ID of the task
+/// * `user` - The user address
+pub fn remove_verification_key(e: &Env, task_id: u64, user: &Address) {
+    let key = VerificationKey {
+        task_id,
+        user: user.clone(),
+    };
+    let prev_key = DataKey::PendingVerificationPrev(key.clone());
+    if !e.storage().persistent().has(&prev_key) {
+        // Not in the pending list: nothing to unlink.
+        return;
+    }
+    let prev: Option<VerificationKey> = e.storage().persistent().get(&prev_key).unwrap_or(None);
+    let next: Option<VerificationKey> = e
+        .storage()
+        .persistent()
+        .get(&DataKey::PendingVerificationNext(key.clone()))
+        .unwrap_or(None);
+    let mut state = read_pending_list(e);
+    match &prev {
+        Some(prev_key_val) => {
+            e.storage().persistent().set(
+                &DataKey::PendingVerificationNext(prev_key_val.clone()),
+                &next,
+            );
+        }
+        None => state.head = next.clone(),
+    }
+    match &next {
+        Some(next_key_val) => {
+            e.storage().persistent().set(
+                &DataKey::PendingVerificationPrev(next_key_val.clone()),
+                &prev,
+            );
+        }
+        None => state.tail = prev.clone(),
+    }
+    e.storage().persistent().remove(&prev_key);
+    e.storage()
+        .persistent()
+        .remove(&DataKey::PendingVerificationNext(key.clone()));
+    state.count = state.count.saturating_sub(1);
+    write_pending_list(e, &state);
+}
+
+/// Returns the key the given pending node links to as `next`, or `None`
+/// when the node is the tail or is no longer in the pending list.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `key` - The verification key whose successor to look up
+///
+/// # Returns
+///
+/// The next pending verification key, or `None` at the end of the list.
+pub fn read_pending_node_next(e: &Env, key: &VerificationKey) -> Option<VerificationKey> {
+    e.storage()
+        .persistent()
+        .get(&DataKey::PendingVerificationNext(key.clone()))
+        .unwrap_or(None)
+}
+
+/// Appends a task ID to a user's verification history.
+///
+/// A user's history is a persistent sequence index (a count plus one
+/// per-position task ID entry), so appending never deserialises a growing
+/// list: it is bounded to a constant number of storage operations.
 ///
 /// # Arguments
 ///
@@ -393,13 +543,16 @@ pub fn read_verification_keys(e: &Env) -> Vec<VerificationKey> {
 /// * `user` - The user address
 /// * `task_id` - The ID of the task to add
 pub fn push_user_verification_key(e: &Env, user: &Address, task_id: u64) {
-    let key = DataKey::UserVerifications(user.clone());
-    let mut list: Vec<u64> = e.storage().persistent().get(&key).unwrap_or(Vec::new(e));
-    list.push_back(task_id);
-    e.storage().persistent().set(&key, &list);
+    let count_key = DataKey::UserVerificationCount(user.clone());
+    let count: u64 = e.storage().persistent().get(&count_key).unwrap_or(0);
+    e.storage().persistent().set(
+        &DataKey::UserVerificationIndex(user.clone(), count),
+        &task_id,
+    );
+    e.storage().persistent().set(&count_key, &(count + 1));
 }
 
-/// Reads all task IDs for a user's verifications.
+/// Returns the number of verifications a user has submitted.
 ///
 /// # Arguments
 ///
@@ -408,10 +561,29 @@ pub fn push_user_verification_key(e: &Env, user: &Address, task_id: u64) {
 ///
 /// # Returns
 ///
-/// A vector of task IDs, or an empty vector if the user has no verifications.
-pub fn read_user_verification_tasks(e: &Env, user: &Address) -> Vec<u64> {
-    let key = DataKey::UserVerifications(user.clone());
-    e.storage().persistent().get(&key).unwrap_or(Vec::new(e))
+/// The count of the user's verification entries.
+pub fn read_user_verification_count(e: &Env, user: &Address) -> u64 {
+    e.storage()
+        .persistent()
+        .get(&DataKey::UserVerificationCount(user.clone()))
+        .unwrap_or(0)
+}
+
+/// Returns the task ID at position `seq` in a user's verification history.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+/// * `user` - The user address to query
+/// * `seq` - The zero-based position in the user's history
+///
+/// # Returns
+///
+/// The task ID at that position, or `None` if the position is out of range.
+pub fn read_user_verification_task(e: &Env, user: &Address, seq: u64) -> Option<u64> {
+    e.storage()
+        .persistent()
+        .get(&DataKey::UserVerificationIndex(user.clone(), seq))
 }
 
 /// Adds an amount to the total paid out by this engine.
