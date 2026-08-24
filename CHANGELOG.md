@@ -24,6 +24,11 @@ package version is bumped.
 
 ### Fixed
 
+#### `reward-engine`
+
+- Fixed documentation for the `oracle` field in the `Verification` struct to explicitly state it records the submitter.
+- Fixed `setup()` tuple unpacking in unit tests in `verification.rs`.
+
 #### `eco-token`
 
 - **[#67] Prevent self-transfer allowance drain in `transfer_from` and fix storage re-fetch TOCTOU in `spend_allowance`.**
