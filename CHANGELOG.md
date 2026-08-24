@@ -113,6 +113,24 @@ Error strings:
   |-------|-----|-------|---------|
   | Instance | `DataKey::VerificationSeq` | `u64` | next verification sequence number to assign |
 
+- **[#76] Keep `reward-engine` instance storage alive by refreshing its TTL
+  on every entry point.** All operational state (admin, token/registry
+  addresses, oracle roster, reward bounds, pause flag, cooldown, total
+  paid, pending-list links) lives in instance storage, which Soroban
+  expires after a short default TTL (~100 ledgers on mainnet, roughly
+  8 minutes at ~5 s/ledger). A quiet period longer than that evicted
+  everything: `read_admin`, `read_token`, and `read_registry` all `unwrap()`
+  and the engine became permanently non-operational. Every public
+  `#[contractimpl]` function now calls `extend_instance_ttl` as its first
+  operation, which extends the contract instance to
+  `INSTANCE_TTL_EXTEND_TO` (535,680 ledgers ≈ 31 days at ~5 s/ledger)
+  whenever it is within `INSTANCE_TTL_THRESHOLD` (100 ledgers) of
+  expiring. Because `extend_ttl` only rewrites the entry when it is close
+  to expiry, the steady-state cost is one conditional storage check per
+  call. Adds `test_instance_ttl_survives_quiet_period`, which advances the
+  ledger by `INSTANCE_TTL_EXTEND_TO - 1` and confirms `approve_proof`
+  still succeeds.
+
 #### `scripts`
 
 - `deploy.sh` now builds the requested contract first and fails fast if no

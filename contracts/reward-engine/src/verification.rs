@@ -352,6 +352,7 @@ impl RewardEngine {
     ///
     /// No authentication required. Can only be called once during deployment.
     pub fn initialize(e: Env, admin: Address, token: Address, registry: Address, oracle: Address) {
+        storage::extend_instance_ttl(&e);
         if storage::has_admin(&e) {
             panic!("engine: already initialized");
         }
@@ -380,6 +381,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from the admin address.
     pub fn set_oracle(e: Env, caller: Address, new_oracle: Address) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         require_admin(&e, &caller);
         if new_oracle == caller {
@@ -406,6 +408,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from the admin address.
     pub fn add_oracle(e: Env, caller: Address, new_oracle: Address) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         require_admin(&e, &caller);
         let admin = storage::read_admin(&e);
@@ -437,6 +440,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from the admin address.
     pub fn remove_oracle(e: Env, caller: Address, oracle: Address) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         require_admin(&e, &caller);
         if !storage::is_registered_oracle(&e, &oracle) {
@@ -455,6 +459,7 @@ impl RewardEngine {
     ///
     /// A vector of all registered oracle addresses.
     pub fn get_oracles(e: Env) -> soroban_sdk::Vec<Address> {
+        storage::extend_instance_ttl(&e);
         storage::read_oracles(&e)
     }
 
@@ -468,6 +473,7 @@ impl RewardEngine {
     ///
     /// true if the address is a registered oracle, false otherwise.
     pub fn is_oracle(e: Env, addr: Address) -> bool {
+        storage::extend_instance_ttl(&e);
         storage::is_registered_oracle(&e, &addr)
     }
 
@@ -486,6 +492,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from the admin address.
     pub fn set_token(e: Env, caller: Address, new_token: Address) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         require_admin(&e, &caller);
         storage::write_token(&e, &new_token);
@@ -506,6 +513,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from the admin address.
     pub fn set_registry(e: Env, caller: Address, new_registry: Address) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         require_admin(&e, &caller);
         storage::write_registry(&e, &new_registry);
@@ -529,6 +537,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from the admin address.
     pub fn set_reward_range(e: Env, caller: Address, min_reward: i128, max_reward: i128) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         require_admin(&e, &caller);
         if min_reward <= 0 {
@@ -557,6 +566,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from the admin address.
     pub fn set_user_cooldown(e: Env, caller: Address, min_ledgers_between_rewards: u64) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         require_admin(&e, &caller);
         storage::write_user_cooldown(&e, min_ledgers_between_rewards);
@@ -568,6 +578,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from the admin address.
     pub fn pause(e: Env, caller: Address) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         require_admin(&e, &caller);
         storage::set_paused(&e, true);
@@ -587,6 +598,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from the admin address.
     pub fn unpause(e: Env, caller: Address) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         require_admin(&e, &caller);
         storage::set_paused(&e, false);
@@ -598,6 +610,7 @@ impl RewardEngine {
     ///
     /// true if the contract is paused, false otherwise.
     pub fn is_paused(e: Env) -> bool {
+        storage::extend_instance_ttl(&e);
         storage::is_paused(&e)
     }
 
@@ -625,6 +638,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from a registered oracle address.
     pub fn submit_proof(e: Env, oracle: Address, user: Address, task_id: u64, proof_cid: String) {
+        storage::extend_instance_ttl(&e);
         require_not_paused(&e);
         oracle.require_auth();
         require_oracle(&e, &oracle);
@@ -713,6 +727,7 @@ impl RewardEngine {
         task_id: u64,
         reward_amount: i128,
     ) {
+        storage::extend_instance_ttl(&e);
         require_not_paused(&e);
         oracle.require_auth();
         require_oracle(&e, &oracle);
@@ -766,6 +781,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from a registered oracle address.
     pub fn reject_proof(e: Env, oracle: Address, user: Address, task_id: u64) {
+        storage::extend_instance_ttl(&e);
         require_not_paused(&e);
         oracle.require_auth();
         require_oracle(&e, &oracle);
@@ -813,6 +829,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from the admin address.
     pub fn dispute_proof(e: Env, caller: Address, user: Address, task_id: u64) {
+        storage::extend_instance_ttl(&e);
         require_not_paused(&e);
         caller.require_auth();
         require_admin(&e, &caller);
@@ -869,6 +886,7 @@ impl RewardEngine {
         approve: bool,
         reward_amount: i128,
     ) {
+        storage::extend_instance_ttl(&e);
         require_not_paused(&e);
         caller.require_auth();
         require_admin(&e, &caller);
@@ -918,6 +936,7 @@ impl RewardEngine {
     ///
     /// Panics if no verification exists for this pair.
     pub fn get_verification(e: Env, task_id: u64, user: Address) -> Verification {
+        storage::extend_instance_ttl(&e);
         match storage::read_verification(&e, task_id, &user) {
             Some(v) => v,
             None => panic!("engine: verification not found"),
@@ -938,6 +957,7 @@ impl RewardEngine {
     ///
     /// Panics if no verification exists for this CID hash.
     pub fn get_verification_by_cid_hash(e: Env, cid_hash: BytesN<32>) -> Verification {
+        storage::extend_instance_ttl(&e);
         let key = match storage::read_cid_index(&e, &cid_hash) {
             Some(key) => key,
             None => panic!("engine: not found"),
@@ -985,6 +1005,7 @@ impl RewardEngine {
         cursor: u64,
         limit: u32,
     ) -> soroban_sdk::Vec<Verification> {
+        storage::extend_instance_ttl(&e);
         collect_pending(&e, cursor, limit)
     }
 
@@ -994,6 +1015,7 @@ impl RewardEngine {
     ///
     /// A vector of all pending verification records.
     pub fn get_pending_verifications(e: Env) -> soroban_sdk::Vec<Verification> {
+        storage::extend_instance_ttl(&e);
         collect_pending(&e, 0, u32::MAX)
     }
 
@@ -1016,6 +1038,7 @@ impl RewardEngine {
         cursor: u32,
         limit: u32,
     ) -> soroban_sdk::Vec<Verification> {
+        storage::extend_instance_ttl(&e);
         let count = storage::read_user_verification_count(&e, &user);
         let start = (cursor as u64).min(count);
         let end = start.saturating_add(limit as u64).min(count);
@@ -1038,6 +1061,7 @@ impl RewardEngine {
     ///
     /// The cumulative sum of all approved rewards as an i128.
     pub fn total_paid(e: Env) -> i128 {
+        storage::extend_instance_ttl(&e);
         storage::read_total_paid(&e)
     }
 
@@ -1057,6 +1081,7 @@ impl RewardEngine {
     ///
     /// Requires authentication from the current admin address.
     pub fn propose_admin(e: Env, current_admin: Address, new_admin: Address) {
+        storage::extend_instance_ttl(&e);
         current_admin.require_auth();
         require_admin(&e, &current_admin);
         if new_admin == current_admin {
@@ -1071,6 +1096,7 @@ impl RewardEngine {
     }
 
     pub fn accept_admin(e: Env, pending_admin: Address) {
+        storage::extend_instance_ttl(&e);
         pending_admin.require_auth();
         let proposed =
             storage::read_pending_admin(&e).unwrap_or_else(|| panic!("engine: no pending admin"));
@@ -1088,15 +1114,18 @@ impl RewardEngine {
     // DEPRECATED: use propose_admin. This alias preserves the existing ABI while
     // requiring the proposed admin to accept before gaining control.
     pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+        storage::extend_instance_ttl(&e);
         Self::propose_admin(e, current_admin, new_admin);
     }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::storage::{INSTANCE_TTL_EXTEND_TO, INSTANCE_TTL_THRESHOLD};
     use crate::{RewardEngine, RewardEngineClient, VerificationStatus};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::testutils::BytesN;
+    use soroban_sdk::testutils::Deployer as _;
     use soroban_sdk::testutils::Ledger as _;
     use soroban_sdk::{Address, Env, String};
 
@@ -1608,6 +1637,45 @@ mod test {
 
         client.dispute_proof(&admin, &user3, &task_id);
         assert_eq!(client.get_pending_verifications().len(), 0);
+    }
+
+    #[test]
+    fn test_instance_ttl_survives_quiet_period() {
+        let (e, _admin, oracle, user, task_id, client) = setup();
+        e.mock_all_auths_allowing_non_root_auth();
+
+        let proof_cid = String::from_str(&e, "QmTtlQuiet");
+        client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+
+        // Advance the ledger until the instance is within THRESHOLD ledgers
+        // of expiring (a freshly deployed instance starts with the env's
+        // default TTL, so read it rather than hardcoding).
+        let engine_addr = client.address.clone();
+        let remaining = e.deployer().get_contract_instance_ttl(&engine_addr);
+        e.ledger()
+            .set_sequence_number(remaining - INSTANCE_TTL_THRESHOLD);
+
+        // Any interaction now refreshes the instance TTL out to
+        // INSTANCE_TTL_EXTEND_TO: the engine's configuration (admin, token,
+        // registry, oracles, ...) cannot silently expire after a quiet
+        // period as long as the contract is touched at least once per
+        // EXTEND_TO ledgers.
+        let _ = client.total_paid();
+        assert_eq!(
+            e.deployer().get_contract_instance_ttl(&engine_addr),
+            INSTANCE_TTL_EXTEND_TO
+        );
+
+        // A quiet period of INSTANCE_TTL_EXTEND_TO - 1 ledgers (one short
+        // of the refreshed TTL) must not break the engine: approve_proof
+        // still succeeds — oracle check, verification lookup, registry
+        // complete_task, and token mint all work with the config intact.
+        e.ledger()
+            .set_sequence_number(e.ledger().sequence() + INSTANCE_TTL_EXTEND_TO - 1);
+        client.approve_proof(&oracle, &user, &task_id, &1000);
+
+        let verification = client.get_verification(&task_id, &user);
+        assert_eq!(verification.status, VerificationStatus::Approved);
     }
 
     #[test]

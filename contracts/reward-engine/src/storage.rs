@@ -3,6 +3,34 @@ use soroban_sdk::{contracttype, Address, BytesN, Env, String, Vec};
 const CID_INDEX_TTL_THRESHOLD: u32 = 100;
 const CID_INDEX_TTL_EXTEND_TO: u32 = 4096;
 
+/// Instance-storage TTL management.
+///
+/// The engine's operational state — admin, token/registry addresses, oracle
+/// roster, reward bounds, pause flag, cooldown, total paid, and the pending
+/// list — all lives in instance storage. Soroban expires instance entries
+/// after a short default TTL (~100 ledgers on mainnet, roughly 8 minutes at
+/// ~5 s/ledger), and if the contract goes untouched for longer than that
+/// every instance entry is evicted: `read_admin`, `read_token`, and
+/// `read_registry` all `unwrap()` and the engine becomes permanently
+/// non-operational.
+///
+/// Every public entry point calls `extend_instance_ttl` as its first
+/// operation, so any interaction refreshes the clock. `extend_ttl` only
+/// rewrites the entry when the remaining TTL is at or below the threshold,
+/// so the steady-state cost is a single conditional storage check per call.
+///
+/// * `INSTANCE_TTL_THRESHOLD`: 100 ledgers (~8 min) — refresh only when the
+///   entry is within this many ledgers of expiry (the default TTL), so an
+///   active contract bumps roughly once per 100 ledgers instead of on every
+///   call.
+/// * `INSTANCE_TTL_EXTEND_TO`: 535,680 ledgers = 31 days at ~5 s/ledger
+///   (17,280 ledgers/day). The engine must survive the longest realistic
+///   quiet period (a holiday break or upstream outage) because expiry is
+///   unrecoverable, and a longer target costs nothing extra: the threshold
+///   governs how often the extension is actually written.
+pub const INSTANCE_TTL_THRESHOLD: u32 = 100;
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 535_680;
+
 #[derive(Clone, Debug, PartialEq)]
 #[contracttype]
 pub enum VerificationStatus {
@@ -723,4 +751,22 @@ pub fn is_paused(e: &Env) -> bool {
         .instance()
         .get(&DataKey::Paused)
         .unwrap_or(false)
+}
+
+/// Extends the TTL of the contract instance (and code) to
+/// `INSTANCE_TTL_EXTEND_TO` ledgers when it is within
+/// `INSTANCE_TTL_THRESHOLD` ledgers of expiring.
+///
+/// Called as the first operation of every public entry point so that any
+/// interaction with the engine keeps its configuration alive. See the
+/// `INSTANCE_TTL_*` constants at the top of this module for the rationale
+/// behind the chosen values.
+///
+/// # Arguments
+///
+/// * `e` - The Soroban environment
+pub fn extend_instance_ttl(e: &Env) {
+    e.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
 }
