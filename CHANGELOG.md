@@ -163,6 +163,18 @@ Error strings:
   and hard-capped at 50 entries to stay within the Soroban 100-entry footprint
   budget.
 
+- **[#72] Add persistent and instance storage TTL management to `eco-token`,
+  `task-registry`, and `reward-engine`.** Soroban persistent storage entries
+  that are never TTL-bumped are evicted after ~4,096 ledgers (~5–6 days).
+  Instance storage expires after ~100 ledgers (~8 min). Only `reward-engine`
+  had instance TTL management — `eco-token` and `task-registry` had zero
+  `extend_ttl` calls, meaning Completion guards, Task entries, Sponsor access
+  control, and token balances/config could all silently vanish. This fix adds
+  `extend_ttl` after every persistent `set()` call, `extend_instance_ttl` at
+  every public entry point, documented TTL constants in each `storage.rs`, and
+  survival tests that advance the ledger to `INSTANCE_TTL_EXTEND_TO - 1`
+  (535,679 ledgers).
+
 ### Added
 
 #### `eco-token`

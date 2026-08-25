@@ -1981,8 +1981,7 @@ mod test {
         // Phase 1: Advance to the persistent TTL boundary (4,095 ledgers).
         // The balances and allowances were last bumped when written at ledger ~0,
         // so they must still be live at PERSISTENT_TTL_EXTEND_TO - 1.
-        e.ledger()
-            .set_sequence_number(PERSISTENT_TTL_EXTEND_TO - 1);
+        e.ledger().set_sequence_number(PERSISTENT_TTL_EXTEND_TO - 1);
 
         // Trigger any entry point to re-bump instance TTLs.
         let _ = client.total_supply();
@@ -2000,8 +1999,7 @@ mod test {
         // Phase 2: Advance past the persistent TTL. Persistent entries have
         // been evicted (their TTL was 4,096). Re-create them by calling
         // mutating entry points, then verify everything works.
-        e.ledger()
-            .set_sequence_number(INSTANCE_TTL_EXTEND_TO - 1);
+        e.ledger().set_sequence_number(INSTANCE_TTL_EXTEND_TO - 1);
 
         // Re-touch balance via mint, re-touch allowance via approve.
         client.mint(&owner, &1);

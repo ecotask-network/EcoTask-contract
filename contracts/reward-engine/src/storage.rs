@@ -468,20 +468,18 @@ pub fn push_verification_key(e: &Env, task_id: u64, user: &Address) {
         None => {
             // First pending verification: it is both head and tail.
             let prev_key = DataKey::PendingVerificationPrev(key.clone());
-            e.storage().persistent().set(
-                &prev_key,
-                &None::<VerificationKey>,
-            );
+            e.storage()
+                .persistent()
+                .set(&prev_key, &None::<VerificationKey>);
             e.storage().persistent().extend_ttl(
                 &prev_key,
                 PERSISTENT_TTL_THRESHOLD,
                 PERSISTENT_TTL_EXTEND_TO,
             );
             let next_key = DataKey::PendingVerificationNext(key.clone());
-            e.storage().persistent().set(
-                &next_key,
-                &None::<VerificationKey>,
-            );
+            e.storage()
+                .persistent()
+                .set(&next_key, &None::<VerificationKey>);
             e.storage().persistent().extend_ttl(
                 &next_key,
                 PERSISTENT_TTL_THRESHOLD,
@@ -494,30 +492,27 @@ pub fn push_verification_key(e: &Env, task_id: u64, user: &Address) {
             // Append after the current tail: point the old tail's `next`
             // at the new node and record the new node's `prev` back to it.
             let old_next_key = DataKey::PendingVerificationNext(tail_key.clone());
-            e.storage().persistent().set(
-                &old_next_key,
-                &Some(key.clone()),
-            );
+            e.storage()
+                .persistent()
+                .set(&old_next_key, &Some(key.clone()));
             e.storage().persistent().extend_ttl(
                 &old_next_key,
                 PERSISTENT_TTL_THRESHOLD,
                 PERSISTENT_TTL_EXTEND_TO,
             );
             let prev_key = DataKey::PendingVerificationPrev(key.clone());
-            e.storage().persistent().set(
-                &prev_key,
-                &Some(tail_key.clone()),
-            );
+            e.storage()
+                .persistent()
+                .set(&prev_key, &Some(tail_key.clone()));
             e.storage().persistent().extend_ttl(
                 &prev_key,
                 PERSISTENT_TTL_THRESHOLD,
                 PERSISTENT_TTL_EXTEND_TO,
             );
             let next_key = DataKey::PendingVerificationNext(key.clone());
-            e.storage().persistent().set(
-                &next_key,
-                &None::<VerificationKey>,
-            );
+            e.storage()
+                .persistent()
+                .set(&next_key, &None::<VerificationKey>);
             e.storage().persistent().extend_ttl(
                 &next_key,
                 PERSISTENT_TTL_THRESHOLD,
@@ -561,10 +556,7 @@ pub fn remove_verification_key(e: &Env, task_id: u64, user: &Address) {
     match &prev {
         Some(prev_key_val) => {
             let next_of_prev = DataKey::PendingVerificationNext(prev_key_val.clone());
-            e.storage().persistent().set(
-                &next_of_prev,
-                &next,
-            );
+            e.storage().persistent().set(&next_of_prev, &next);
             e.storage().persistent().extend_ttl(
                 &next_of_prev,
                 PERSISTENT_TTL_THRESHOLD,
@@ -576,10 +568,7 @@ pub fn remove_verification_key(e: &Env, task_id: u64, user: &Address) {
     match &next {
         Some(next_key_val) => {
             let prev_of_next = DataKey::PendingVerificationPrev(next_key_val.clone());
-            e.storage().persistent().set(
-                &prev_of_next,
-                &prev,
-            );
+            e.storage().persistent().set(&prev_of_next, &prev);
             e.storage().persistent().extend_ttl(
                 &prev_of_next,
                 PERSISTENT_TTL_THRESHOLD,
@@ -649,10 +638,7 @@ pub fn push_user_verification_key(e: &Env, user: &Address, task_id: u64) {
     let count_key = DataKey::UserVerificationCount(user.clone());
     let count: u64 = e.storage().persistent().get(&count_key).unwrap_or(0);
     let index_key = DataKey::UserVerificationIndex(user.clone(), count);
-    e.storage().persistent().set(
-        &index_key,
-        &task_id,
-    );
+    e.storage().persistent().set(&index_key, &task_id);
     e.storage().persistent().extend_ttl(
         &index_key,
         PERSISTENT_TTL_THRESHOLD,
