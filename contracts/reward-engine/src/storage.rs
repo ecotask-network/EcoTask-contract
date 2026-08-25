@@ -1,7 +1,9 @@
 use soroban_sdk::{contracttype, Address, BytesN, Env, String, Vec};
 
-const CID_INDEX_TTL_THRESHOLD: u32 = 100;
-const CID_INDEX_TTL_EXTEND_TO: u32 = 4096;
+/// Persistent storage TTL: re-bump on every touch; 4,096 ledgers (~5.7 days)
+/// provides ample headroom since entries are refreshed on every interaction.
+pub const PERSISTENT_TTL_THRESHOLD: u32 = 100;
+pub const PERSISTENT_TTL_EXTEND_TO: u32 = 4_096;
 
 /// Instance-storage TTL management.
 ///
@@ -305,6 +307,9 @@ pub fn is_registered_oracle(e: &Env, addr: &Address) -> bool {
 pub fn write_verification(e: &Env, task_id: u64, user: &Address, v: &Verification) {
     let key = DataKey::Verification(task_id, user.clone());
     e.storage().persistent().set(&key, v);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
 
 /// Reads a verification record from persistent storage.
@@ -337,7 +342,7 @@ pub fn write_cid_index(e: &Env, cid_hash: &BytesN<32>, verification_key: &Verifi
     e.storage().persistent().set(&key, verification_key);
     e.storage()
         .persistent()
-        .extend_ttl(&key, CID_INDEX_TTL_THRESHOLD, CID_INDEX_TTL_EXTEND_TO);
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
 
 /// Reads a verification key from the CID index.
@@ -462,13 +467,25 @@ pub fn push_verification_key(e: &Env, task_id: u64, user: &Address) {
     match state.tail.clone() {
         None => {
             // First pending verification: it is both head and tail.
+            let prev_key = DataKey::PendingVerificationPrev(key.clone());
             e.storage().persistent().set(
-                &DataKey::PendingVerificationPrev(key.clone()),
+                &prev_key,
                 &None::<VerificationKey>,
             );
+            e.storage().persistent().extend_ttl(
+                &prev_key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+            let next_key = DataKey::PendingVerificationNext(key.clone());
             e.storage().persistent().set(
-                &DataKey::PendingVerificationNext(key.clone()),
+                &next_key,
                 &None::<VerificationKey>,
+            );
+            e.storage().persistent().extend_ttl(
+                &next_key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
             );
             state.head = Some(key.clone());
             state.tail = Some(key);
@@ -476,17 +493,35 @@ pub fn push_verification_key(e: &Env, task_id: u64, user: &Address) {
         Some(tail_key) => {
             // Append after the current tail: point the old tail's `next`
             // at the new node and record the new node's `prev` back to it.
+            let old_next_key = DataKey::PendingVerificationNext(tail_key.clone());
             e.storage().persistent().set(
-                &DataKey::PendingVerificationNext(tail_key.clone()),
+                &old_next_key,
                 &Some(key.clone()),
             );
+            e.storage().persistent().extend_ttl(
+                &old_next_key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+            let prev_key = DataKey::PendingVerificationPrev(key.clone());
             e.storage().persistent().set(
-                &DataKey::PendingVerificationPrev(key.clone()),
+                &prev_key,
                 &Some(tail_key.clone()),
             );
+            e.storage().persistent().extend_ttl(
+                &prev_key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
+            );
+            let next_key = DataKey::PendingVerificationNext(key.clone());
             e.storage().persistent().set(
-                &DataKey::PendingVerificationNext(key.clone()),
+                &next_key,
                 &None::<VerificationKey>,
+            );
+            e.storage().persistent().extend_ttl(
+                &next_key,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
             );
             state.tail = Some(key);
         }
@@ -525,18 +560,30 @@ pub fn remove_verification_key(e: &Env, task_id: u64, user: &Address) {
     let mut state = read_pending_list(e);
     match &prev {
         Some(prev_key_val) => {
+            let next_of_prev = DataKey::PendingVerificationNext(prev_key_val.clone());
             e.storage().persistent().set(
-                &DataKey::PendingVerificationNext(prev_key_val.clone()),
+                &next_of_prev,
                 &next,
+            );
+            e.storage().persistent().extend_ttl(
+                &next_of_prev,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
             );
         }
         None => state.head = next.clone(),
     }
     match &next {
         Some(next_key_val) => {
+            let prev_of_next = DataKey::PendingVerificationPrev(next_key_val.clone());
             e.storage().persistent().set(
-                &DataKey::PendingVerificationPrev(next_key_val.clone()),
+                &prev_of_next,
                 &prev,
+            );
+            e.storage().persistent().extend_ttl(
+                &prev_of_next,
+                PERSISTENT_TTL_THRESHOLD,
+                PERSISTENT_TTL_EXTEND_TO,
             );
         }
         None => state.tail = prev.clone(),
@@ -601,11 +648,22 @@ pub fn read_pending_node_next(e: &Env, key: &VerificationKey) -> Option<Verifica
 pub fn push_user_verification_key(e: &Env, user: &Address, task_id: u64) {
     let count_key = DataKey::UserVerificationCount(user.clone());
     let count: u64 = e.storage().persistent().get(&count_key).unwrap_or(0);
+    let index_key = DataKey::UserVerificationIndex(user.clone(), count);
     e.storage().persistent().set(
-        &DataKey::UserVerificationIndex(user.clone(), count),
+        &index_key,
         &task_id,
     );
+    e.storage().persistent().extend_ttl(
+        &index_key,
+        PERSISTENT_TTL_THRESHOLD,
+        PERSISTENT_TTL_EXTEND_TO,
+    );
     e.storage().persistent().set(&count_key, &(count + 1));
+    e.storage().persistent().extend_ttl(
+        &count_key,
+        PERSISTENT_TTL_THRESHOLD,
+        PERSISTENT_TTL_EXTEND_TO,
+    );
 }
 
 /// Returns the number of verifications a user has submitted.
@@ -712,6 +770,9 @@ pub fn read_user_cooldown(e: &Env) -> u64 {
 pub fn write_last_reward_ledger(e: &Env, user: &Address, ledger: u64) {
     let key = DataKey::LastRewardLedger(user.clone());
     e.storage().persistent().set(&key, &ledger);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
 
 /// Reads the ledger at which a user most recently received a reward.

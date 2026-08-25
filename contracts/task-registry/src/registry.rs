@@ -90,6 +90,7 @@ impl RegistryContract {
     ///
     /// No authentication required. Can only be called once during deployment.
     pub fn initialize(e: Env, admin: Address) {
+        storage::extend_instance_ttl(&e);
         if storage::has_admin(&e) {
             panic!("registry: already initialized");
         }
@@ -113,6 +114,7 @@ impl RegistryContract {
     ///
     /// Requires authentication from the admin address.
     pub fn add_sponsor(e: Env, caller: Address, sponsor: Address) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         access::require_admin(&e, &caller);
         storage::add_sponsor(&e, &sponsor);
@@ -134,6 +136,7 @@ impl RegistryContract {
     ///
     /// Requires authentication from the admin address.
     pub fn remove_sponsor(e: Env, caller: Address, sponsor: Address) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         access::require_admin(&e, &caller);
         storage::remove_sponsor(&e, &sponsor);
@@ -175,6 +178,7 @@ impl RegistryContract {
         max_completions: u32,
         expires_at: u64,
     ) -> u64 {
+        storage::extend_instance_ttl(&e);
         creator.require_auth();
         access::require_sponsor(&e, &creator);
 
@@ -237,6 +241,7 @@ impl RegistryContract {
     ///
     /// No authentication is required.
     pub fn get_task(e: Env, task_id: u64) -> Task {
+        storage::extend_instance_ttl(&e);
         match storage::read_task(&e, task_id) {
             Some(task) => task,
             None => panic!("registry: task not found"),
@@ -265,6 +270,7 @@ impl RegistryContract {
     ///
     /// No authentication is required.
     pub fn get_task_live_status(e: Env, task_id: u64) -> Task {
+        storage::extend_instance_ttl(&e);
         let mut task = match storage::read_task(&e, task_id) {
             Some(task) => task,
             None => panic!("registry: task not found"),
@@ -302,6 +308,7 @@ impl RegistryContract {
     ///
     /// Requires authentication from the caller address, which must be a sponsor or admin.
     pub fn complete_task(e: Env, caller: Address, task_id: u64, user: Address) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         access::require_sponsor(&e, &caller);
 
@@ -359,6 +366,7 @@ impl RegistryContract {
     ///
     /// Requires authentication from the admin address.
     pub fn expire_task(e: Env, caller: Address, task_id: u64) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         access::require_admin(&e, &caller);
 
@@ -394,6 +402,7 @@ impl RegistryContract {
     ///
     /// No authentication is required.
     pub fn expire_task_permissionless(e: Env, task_id: u64) {
+        storage::extend_instance_ttl(&e);
         let mut task = match storage::read_task(&e, task_id) {
             Some(task) => task,
             None => panic!("registry: task not found"),
@@ -434,6 +443,7 @@ impl RegistryContract {
     ///
     /// Requires authentication from the caller address.
     pub fn extend_task_expiry(e: Env, caller: Address, task_id: u64, new_expires_at: u64) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         let admin = storage::read_admin(&e);
 
@@ -483,6 +493,7 @@ impl RegistryContract {
     ///
     /// Requires authentication from the caller address.
     pub fn cancel_task(e: Env, caller: Address, task_id: u64) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
 
         let mut task = match storage::read_task(&e, task_id) {
@@ -524,6 +535,7 @@ impl RegistryContract {
     ///
     /// Requires authentication from the admin address.
     pub fn admin_cancel_task(e: Env, caller: Address, task_id: u64) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         access::require_admin(&e, &caller);
 
@@ -552,6 +564,7 @@ impl RegistryContract {
     ///
     /// The count of tasks created (also the next available task ID).
     pub fn task_count(e: Env) -> u64 {
+        storage::extend_instance_ttl(&e);
         storage::read_task_count(&e)
     }
 
@@ -566,6 +579,7 @@ impl RegistryContract {
     ///
     /// true if the user has completed the task, false otherwise.
     pub fn is_task_completed(e: Env, task_id: u64, user: Address) -> bool {
+        storage::extend_instance_ttl(&e);
         storage::is_completed(&e, task_id, &user)
     }
 
@@ -596,6 +610,7 @@ impl RegistryContract {
     ///
     /// Up to `MAX_CREATOR_TASKS_QUERY` task IDs created by the specified creator.
     pub fn get_tasks_by_creator(e: Env, creator: Address) -> soroban_sdk::Vec<u64> {
+        storage::extend_instance_ttl(&e);
         /// Hard cap on the unpaged creator-task query. Must stay well below the
         /// Soroban per-transaction ledger-entry footprint limit (100 entries).
         /// Use `get_tasks_by_creator_paged` for creators with more than this
@@ -626,6 +641,7 @@ impl RegistryContract {
         cursor: u32,
         limit: u32,
     ) -> soroban_sdk::Vec<u64> {
+        storage::extend_instance_ttl(&e);
         storage::read_creator_tasks_paged(&e, &creator, cursor as u64, limit as u64)
     }
 
@@ -643,6 +659,7 @@ impl RegistryContract {
     ///
     /// A vector of up to `limit` Task structs, starting from `cursor`.
     pub fn list_tasks(e: Env, cursor: u64, limit: u32) -> soroban_sdk::Vec<Task> {
+        storage::extend_instance_ttl(&e);
         let count = storage::read_task_count(&e);
         let mut tasks: soroban_sdk::Vec<Task> = soroban_sdk::Vec::new(&e);
         let mut current = cursor;
@@ -673,6 +690,7 @@ impl RegistryContract {
     ///
     /// Requires authentication from the current admin address.
     pub fn propose_admin(e: Env, current_admin: Address, new_admin: Address) {
+        storage::extend_instance_ttl(&e);
         current_admin.require_auth();
         let stored_admin = storage::read_admin(&e);
         if current_admin != stored_admin {
@@ -690,6 +708,7 @@ impl RegistryContract {
     }
 
     pub fn accept_admin(e: Env, pending_admin: Address) {
+        storage::extend_instance_ttl(&e);
         pending_admin.require_auth();
         let proposed =
             storage::read_pending_admin(&e).unwrap_or_else(|| panic!("registry: no pending admin"));
@@ -707,12 +726,14 @@ impl RegistryContract {
     // DEPRECATED: use propose_admin. This alias preserves the existing ABI while
     // requiring the proposed admin to accept before gaining control.
     pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+        storage::extend_instance_ttl(&e);
         Self::propose_admin(e, current_admin, new_admin);
     }
 }
 
 #[cfg(test)]
 mod test {
+    use crate::storage::INSTANCE_TTL_EXTEND_TO;
     use crate::{RegistryContract, RegistryContractClient, TaskStatus};
     use soroban_sdk::testutils::{Address as _, BytesN as _, Ledger as _};
     use soroban_sdk::{Address, BytesN, Env, String, Vec};
@@ -1437,27 +1458,51 @@ mod test {
         let (e, admin, client) = setup();
         e.mock_all_auths();
 
+        let sponsor = Address::generate(&e);
+        client.add_sponsor(&admin, &sponsor);
+
         let task_type = String::from_str(&e, "tree-planting");
-        let task_id = create_test_task(&client, &admin, &task_type, 2, 100_000);
+        let task_id = create_test_task(&client, &sponsor, &task_type, 2, 100_000);
 
         let user1 = Address::generate(&e);
-        client.complete_task(&admin, &task_id, &user1);
+        client.complete_task(&sponsor, &task_id, &user1);
 
-        // Advance the ledger well past the default instance storage TTL
-        // (instance TTL is ~100 ledgers; persistent TTL is ~4096).
-        e.ledger().set_sequence_number(5000);
+        // Advance ledger to the TTL boundary for both storage classes.
+        e.ledger().set_sequence_number(INSTANCE_TTL_EXTEND_TO - 1);
 
+        // Trigger any entry point to re-bump TTLs.
+        let _ = client.task_count();
+
+        // Task entry (persistent) survives.
         let task = client.get_task(&task_id);
         assert_eq!(task.id, task_id);
-        assert_eq!(task.creator, admin);
+        assert_eq!(task.creator, sponsor);
         assert_eq!(task.task_type, task_type);
         assert_eq!(task.completions, 1);
         assert_eq!(task.status, TaskStatus::Active);
+
+        // Completion entry (persistent) survives.
         assert!(client.is_task_completed(&task_id, &user1));
 
-        let ids = client.get_tasks_by_creator(&admin);
-        assert_eq!(ids.len(), 1);
-        assert_eq!(ids.get(0).unwrap(), task_id);
+        // Sponsor entry (persistent) survives.
+        let loc_hash: BytesN<32> = BytesN::random(&e);
+        let task_id2 = client.create_task(
+            &sponsor,
+            &String::from_str(&e, "ocean-cleanup"),
+            &loc_hash,
+            &1000,
+            &1,
+            &(e.ledger().timestamp() + 1000),
+        );
+        let task2 = client.get_task(&task_id2);
+        assert_eq!(task2.creator, sponsor);
+
+        // Instance entries (task_count) survive.
+        assert_eq!(client.task_count(), 2);
+
+        // Creator task index entries (persistent) survive.
+        let ids = client.get_tasks_by_creator(&sponsor);
+        assert_eq!(ids.len(), 2);
     }
 
     #[test]

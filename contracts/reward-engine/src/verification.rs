@@ -1676,6 +1676,11 @@ mod test {
 
         let verification = client.get_verification(&task_id, &user);
         assert_eq!(verification.status, VerificationStatus::Approved);
+
+        // Persistent keys (Verification, UserVerificationIndex, UserVerificationCount,
+        // LastRewardLedger) must also survive the quiet period.
+        let user_history = client.get_verifications_by_user(&user, &0, &10);
+        assert_eq!(user_history.len(), 1);
     }
 
     #[test]

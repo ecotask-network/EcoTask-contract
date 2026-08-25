@@ -117,6 +117,7 @@ impl TokenContract {
     ///
     /// No authentication required. Can only be called once during deployment.
     pub fn initialize(e: Env, admin: Address, name: String, symbol: String, decimal: u32) {
+        storage::extend_instance_ttl(&e);
         if storage::has_admin(&e) {
             panic!("token: already initialized");
         }
@@ -142,6 +143,7 @@ impl TokenContract {
     ///
     /// Requires the caller to be the current minter address.
     pub fn mint(e: Env, to: Address, amount: i128) {
+        storage::extend_instance_ttl(&e);
         let minter = storage::read_minter(&e);
         minter.require_auth();
 
@@ -191,6 +193,7 @@ impl TokenContract {
     ///
     /// Requires authentication from the `from` address.
     pub fn transfer(e: Env, from: Address, to: Address, amount: i128) {
+        storage::extend_instance_ttl(&e);
         from.require_auth();
 
         if amount <= 0 {
@@ -233,6 +236,7 @@ impl TokenContract {
     ///
     /// The current balance of the address as an i128.
     pub fn balance(e: Env, id: Address) -> i128 {
+        storage::extend_instance_ttl(&e);
         storage::read_balance(&e, &id)
     }
 
@@ -242,6 +246,7 @@ impl TokenContract {
     ///
     /// The total supply as an i128.
     pub fn total_supply(e: Env) -> i128 {
+        storage::extend_instance_ttl(&e);
         storage::read_supply(&e)
     }
 
@@ -253,6 +258,7 @@ impl TokenContract {
     ///
     /// The maximum supply cap, or i128::MAX if no cap is configured.
     pub fn max_supply(e: Env) -> i128 {
+        storage::extend_instance_ttl(&e);
         storage::read_max_supply(&e).unwrap_or(i128::MAX)
     }
 
@@ -275,6 +281,7 @@ impl TokenContract {
     ///
     /// Requires authentication from the admin address.
     pub fn set_max_supply(e: Env, caller: Address, max_supply: i128) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         let admin = storage::read_admin(&e);
         if caller != admin {
@@ -297,6 +304,7 @@ impl TokenContract {
     ///
     /// The human-readable name of the token.
     pub fn name(e: Env) -> String {
+        storage::extend_instance_ttl(&e);
         storage::read_name(&e)
     }
 
@@ -306,6 +314,7 @@ impl TokenContract {
     ///
     /// The token symbol (e.g., "ECO").
     pub fn symbol(e: Env) -> String {
+        storage::extend_instance_ttl(&e);
         storage::read_symbol(&e)
     }
 
@@ -315,6 +324,7 @@ impl TokenContract {
     ///
     /// The decimal precision as a u32.
     pub fn decimal(e: Env) -> u32 {
+        storage::extend_instance_ttl(&e);
         storage::read_decimal(&e)
     }
 
@@ -324,6 +334,7 @@ impl TokenContract {
     ///
     /// The number of decimal places for token display.
     pub fn decimals(e: Env) -> u32 {
+        storage::extend_instance_ttl(&e);
         storage::read_decimal(&e)
     }
 
@@ -344,6 +355,7 @@ impl TokenContract {
     ///
     /// Requires authentication from the admin address.
     pub fn set_metadata(e: Env, caller: Address, name: String, symbol: String, decimal: u32) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         let admin = storage::read_admin(&e);
         if caller != admin {
@@ -366,6 +378,7 @@ impl TokenContract {
     ///
     /// The address of the current administrator.
     pub fn admin(e: Env) -> Address {
+        storage::extend_instance_ttl(&e);
         storage::read_admin(&e)
     }
 
@@ -385,6 +398,7 @@ impl TokenContract {
     ///
     /// Requires authentication from the current admin address.
     pub fn propose_admin(e: Env, current_admin: Address, new_admin: Address) {
+        storage::extend_instance_ttl(&e);
         current_admin.require_auth();
         let stored_admin = storage::read_admin(&e);
         if current_admin != stored_admin {
@@ -402,6 +416,7 @@ impl TokenContract {
     }
 
     pub fn accept_admin(e: Env, pending_admin: Address) {
+        storage::extend_instance_ttl(&e);
         pending_admin.require_auth();
         let proposed =
             storage::read_pending_admin(&e).unwrap_or_else(|| panic!("token: no pending admin"));
@@ -419,6 +434,7 @@ impl TokenContract {
     // DEPRECATED: use propose_admin. This alias preserves the existing ABI while
     // requiring the proposed admin to accept before gaining control.
     pub fn transfer_admin(e: Env, current_admin: Address, new_admin: Address) {
+        storage::extend_instance_ttl(&e);
         Self::propose_admin(e, current_admin, new_admin);
     }
 
@@ -428,6 +444,7 @@ impl TokenContract {
     ///
     /// The address authorized to mint new tokens.
     pub fn minter(e: Env) -> Address {
+        storage::extend_instance_ttl(&e);
         storage::read_minter(&e)
     }
 
@@ -446,6 +463,7 @@ impl TokenContract {
     ///
     /// Requires authentication from the admin address.
     pub fn set_minter(e: Env, caller: Address, new_minter: Address) {
+        storage::extend_instance_ttl(&e);
         caller.require_auth();
         let admin = storage::read_admin(&e);
         if caller != admin {
@@ -483,6 +501,7 @@ impl TokenContract {
     ///
     /// Requires authentication from the `from` address.
     pub fn burn(e: Env, from: Address, amount: i128) {
+        storage::extend_instance_ttl(&e);
         from.require_auth();
 
         if amount <= 0 {
@@ -528,6 +547,7 @@ impl TokenContract {
     ///
     /// Requires authentication from the owner address.
     pub fn approve(e: Env, owner: Address, spender: Address, amount: i128, expiration_ledger: u32) {
+        storage::extend_instance_ttl(&e);
         owner.require_auth();
 
         if amount < 0 {
@@ -563,6 +583,7 @@ impl TokenContract {
     ///
     /// The current allowance amount, or 0 if no allowance exists or it has expired.
     pub fn allowance(e: Env, owner: Address, spender: Address) -> i128 {
+        storage::extend_instance_ttl(&e);
         match storage::read_allowance(&e, &owner, &spender) {
             Some(a) => {
                 if a.expiration_ledger < e.ledger().sequence() {
@@ -597,6 +618,7 @@ impl TokenContract {
     ///
     /// No authentication is required.
     pub fn allowance_with_expiry(e: Env, owner: Address, spender: Address) -> Option<(i128, u32)> {
+        storage::extend_instance_ttl(&e);
         let current_sequence = e.ledger().sequence();
         match storage::read_allowance(&e, &owner, &spender) {
             Some(a) => {
@@ -631,6 +653,7 @@ impl TokenContract {
     ///
     /// Requires authentication from the spender address.
     pub fn transfer_from(e: Env, spender: Address, from: Address, to: Address, amount: i128) {
+        storage::extend_instance_ttl(&e);
         spender.require_auth();
 
         if amount <= 0 {
@@ -1929,6 +1952,68 @@ mod test {
         // Should overflow `to` balance and panic via expect("balance overflow").
         let res = client.try_transfer(&from, &to, &2);
         assert!(res.is_err());
+    }
+
+    use crate::storage::{INSTANCE_TTL_EXTEND_TO, PERSISTENT_TTL_EXTEND_TO};
+
+    #[test]
+    fn test_persistent_storage_survives_ledger_advancement() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let owner = Address::generate(&e);
+        let spender = Address::generate(&e);
+        let recipient = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.mint(&owner, &1000);
+        client.approve(&owner, &spender, &500, &(e.ledger().sequence() + 1_000_000));
+        client.transfer(&owner, &recipient, &200);
+
+        // Phase 1: Advance to the persistent TTL boundary (4,095 ledgers).
+        // The balances and allowances were last bumped when written at ledger ~0,
+        // so they must still be live at PERSISTENT_TTL_EXTEND_TO - 1.
+        e.ledger()
+            .set_sequence_number(PERSISTENT_TTL_EXTEND_TO - 1);
+
+        // Trigger any entry point to re-bump instance TTLs.
+        let _ = client.total_supply();
+
+        // Persistent entries (balance, allowance) must survive.
+        assert_eq!(client.balance(&owner), 800);
+        assert_eq!(client.balance(&recipient), 200);
+        assert_eq!(client.allowance(&owner, &spender), 500);
+
+        // Instance entries (admin, metadata, supply) must survive.
+        assert_eq!(client.admin(), admin);
+        assert_eq!(client.name(), String::from_str(&e, "ECO"));
+        assert_eq!(client.total_supply(), 1000);
+
+        // Phase 2: Advance past the persistent TTL. Persistent entries have
+        // been evicted (their TTL was 4,096). Re-create them by calling
+        // mutating entry points, then verify everything works.
+        e.ledger()
+            .set_sequence_number(INSTANCE_TTL_EXTEND_TO - 1);
+
+        // Re-touch balance via mint, re-touch allowance via approve.
+        client.mint(&owner, &1);
+        client.approve(&owner, &spender, &500, &(e.ledger().sequence() + 1_000_000));
+
+        // All persistent entries re-bumped and alive.
+        assert_eq!(client.balance(&owner), 801);
+        assert_eq!(client.allowance(&owner, &spender), 500);
+
+        // Instance entries still alive.
+        assert_eq!(client.admin(), admin);
+        assert_eq!(client.total_supply(), 1001);
     }
 
     use proptest::prelude::*;

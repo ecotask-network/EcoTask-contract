@@ -1,5 +1,27 @@
 use soroban_sdk::{contracttype, symbol_short, Address, Env, String};
 
+/// Persistent storage TTL: re-bump on every touch; 4,096 ledgers (~5.7 days)
+/// provides ample headroom since entries are refreshed on every interaction.
+pub const PERSISTENT_TTL_THRESHOLD: u32 = 100;
+pub const PERSISTENT_TTL_EXTEND_TO: u32 = 4_096;
+
+/// Instance storage TTL: must survive the longest realistic quiet period
+/// (holiday, upstream outage). 535,680 ledgers = 31 days at ~5 s/ledger.
+pub const INSTANCE_TTL_THRESHOLD: u32 = 100;
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 535_680;
+
+/// Extends the TTL of the contract instance (and code) to
+/// `INSTANCE_TTL_EXTEND_TO` ledgers when it is within
+/// `INSTANCE_TTL_THRESHOLD` ledgers of expiring.
+///
+/// Called as the first operation of every public entry point so that any
+/// interaction with the token keeps its configuration alive.
+pub fn extend_instance_ttl(e: &Env) {
+    e.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
+
 #[derive(Clone, Debug)]
 #[contracttype]
 pub struct Allowance {
@@ -17,6 +39,9 @@ pub struct Allowance {
 pub fn write_balance(e: &Env, addr: &Address, amount: i128) {
     let key = (symbol_short!("balance"), addr.clone());
     e.storage().persistent().set(&key, &amount);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
 
 /// Reads the token balance for an address from storage.
@@ -253,6 +278,9 @@ pub fn read_max_supply(e: &Env) -> Option<i128> {
 pub fn write_allowance(e: &Env, owner: &Address, spender: &Address, allowance: &Allowance) {
     let key = (symbol_short!("allow"), owner.clone(), spender.clone());
     e.storage().persistent().set(&key, allowance);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
 
 /// Reads an allowance for a spender from storage.
@@ -312,4 +340,7 @@ pub fn spend_allowance(
         expiration_ledger: allowance.expiration_ledger,
     };
     e.storage().persistent().set(&key, &updated);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }

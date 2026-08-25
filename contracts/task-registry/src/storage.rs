@@ -1,6 +1,28 @@
 use ecotask_types::Task;
 use soroban_sdk::{contracttype, Address, Env, Vec};
 
+/// Persistent storage TTL: re-bump on every touch; 4,096 ledgers (~5.7 days)
+/// provides ample headroom since entries are refreshed on every interaction.
+pub const PERSISTENT_TTL_THRESHOLD: u32 = 100;
+pub const PERSISTENT_TTL_EXTEND_TO: u32 = 4_096;
+
+/// Instance storage TTL: must survive the longest realistic quiet period
+/// (holiday, upstream outage). 535,680 ledgers = 31 days at ~5 s/ledger.
+pub const INSTANCE_TTL_THRESHOLD: u32 = 100;
+pub const INSTANCE_TTL_EXTEND_TO: u32 = 535_680;
+
+/// Extends the TTL of the contract instance (and code) to
+/// `INSTANCE_TTL_EXTEND_TO` ledgers when it is within
+/// `INSTANCE_TTL_THRESHOLD` ledgers of expiring.
+///
+/// Called as the first operation of every public entry point so that any
+/// interaction with the registry keeps its configuration alive.
+pub fn extend_instance_ttl(e: &Env) {
+    e.storage()
+        .instance()
+        .extend_ttl(INSTANCE_TTL_THRESHOLD, INSTANCE_TTL_EXTEND_TO);
+}
+
 #[derive(Clone, Debug)]
 #[contracttype]
 pub enum DataKey {
@@ -31,6 +53,9 @@ pub enum DataKey {
 pub fn write_task(e: &Env, task: &Task) {
     let key = DataKey::Task(task.id);
     e.storage().persistent().set(&key, task);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
 
 /// Reads a task from persistent storage by its ID.
@@ -135,6 +160,9 @@ pub fn remove_pending_admin(e: &Env) {
 pub fn add_sponsor(e: &Env, sponsor: &Address) {
     let key = DataKey::Sponsor(sponsor.clone());
     e.storage().persistent().set(&key, &true);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
 
 /// Removes a sponsor address from the approved sponsors list.
@@ -173,6 +201,9 @@ pub fn is_sponsor(e: &Env, addr: &Address) -> bool {
 pub fn mark_completed(e: &Env, task_id: u64, user: &Address) {
     let key = DataKey::Completion(task_id, user.clone());
     e.storage().persistent().set(&key, &true);
+    e.storage()
+        .persistent()
+        .extend_ttl(&key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
 
 /// Checks if a user has completed a specific task.
@@ -232,8 +263,14 @@ pub fn push_creator_task(e: &Env, creator: &Address, task_id: u64) {
 
     let entry_key = DataKey::CreatorTask(creator.clone(), index);
     e.storage().persistent().set(&entry_key, &task_id);
+    e.storage()
+        .persistent()
+        .extend_ttl(&entry_key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 
     e.storage().persistent().set(&count_key, &(index + 1));
+    e.storage()
+        .persistent()
+        .extend_ttl(&count_key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
 }
 
 /// Reads up to `limit` task IDs for `creator` starting at `offset` (0-based).
