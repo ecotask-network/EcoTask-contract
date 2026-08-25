@@ -263,14 +263,18 @@ pub fn push_creator_task(e: &Env, creator: &Address, task_id: u64) {
 
     let entry_key = DataKey::CreatorTask(creator.clone(), index);
     e.storage().persistent().set(&entry_key, &task_id);
-    e.storage()
-        .persistent()
-        .extend_ttl(&entry_key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+    e.storage().persistent().extend_ttl(
+        &entry_key,
+        PERSISTENT_TTL_THRESHOLD,
+        PERSISTENT_TTL_EXTEND_TO,
+    );
 
     e.storage().persistent().set(&count_key, &(index + 1));
-    e.storage()
-        .persistent()
-        .extend_ttl(&count_key, PERSISTENT_TTL_THRESHOLD, PERSISTENT_TTL_EXTEND_TO);
+    e.storage().persistent().extend_ttl(
+        &count_key,
+        PERSISTENT_TTL_THRESHOLD,
+        PERSISTENT_TTL_EXTEND_TO,
+    );
 }
 
 /// Reads up to `limit` task IDs for `creator` starting at `offset` (0-based).
