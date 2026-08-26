@@ -93,6 +93,7 @@ pub enum DataKey {
     Token,
     Registry,
     Oracles,
+    OracleFlag(Address),
     Verification(u64, Address),
     CidHash(BytesN<32>),
     MinReward,
@@ -233,7 +234,25 @@ pub fn read_registry(e: &Env) -> Address {
 /// * `oracles` - The vector of oracle addresses to store
 pub fn write_oracles(e: &Env, oracles: &Vec<Address>) {
     let key = DataKey::Oracles;
+    let old_oracles: Vec<Address> = e
+        .storage()
+        .instance()
+        .get(&key)
+        .unwrap_or(Vec::new(e));
+
+    for oracle in old_oracles.iter() {
+        e.storage()
+            .instance()
+            .remove(&DataKey::OracleFlag(oracle));
+    }
+
     e.storage().instance().set(&key, oracles);
+
+    for oracle in oracles.iter() {
+        e.storage()
+            .instance()
+            .set(&DataKey::OracleFlag(oracle), &true);
+    }
 }
 
 /// Reads the list of oracle addresses from instance storage.
@@ -261,6 +280,9 @@ pub fn push_oracle(e: &Env, oracle: &Address) {
     let mut list: Vec<Address> = e.storage().instance().get(&key).unwrap_or(Vec::new(e));
     list.push_back(oracle.clone());
     e.storage().instance().set(&key, &list);
+    e.storage()
+        .instance()
+        .set(&DataKey::OracleFlag(oracle.clone()), &true);
 }
 
 /// Removes an oracle address from the list of registered oracles.
@@ -279,6 +301,9 @@ pub fn remove_oracle_from_list(e: &Env, oracle: &Address) {
         }
     }
     e.storage().instance().set(&key, &filtered);
+    e.storage()
+        .instance()
+        .remove(&DataKey::OracleFlag(oracle.clone()));
 }
 
 /// Checks if an address is a registered oracle.
@@ -292,8 +317,10 @@ pub fn remove_oracle_from_list(e: &Env, oracle: &Address) {
 ///
 /// true if the address is a registered oracle, false otherwise.
 pub fn is_registered_oracle(e: &Env, addr: &Address) -> bool {
-    let oracles = read_oracles(e);
-    oracles.iter().any(|o| o == *addr)
+    e.storage()
+        .instance()
+        .get(&DataKey::OracleFlag(addr.clone()))
+        .unwrap_or(false)
 }
 
 /// Writes a verification record to persistent storage.
