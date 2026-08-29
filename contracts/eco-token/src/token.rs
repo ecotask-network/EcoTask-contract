@@ -187,6 +187,7 @@ impl TokenContract {
     /// # Panics
     ///
     /// * Panics if `amount <= 0`
+    /// * Panics if `from == to`
     /// * Panics if `from` has insufficient balance
     ///
     /// # Auth
@@ -198,6 +199,10 @@ impl TokenContract {
 
         if amount <= 0 {
             panic!("token: amount must be positive");
+        }
+
+        if from == to {
+            panic!("token: cannot transfer to self");
         }
 
         let from_balance = storage::read_balance(&e, &from);
@@ -1525,6 +1530,7 @@ mod test {
     }
 
     #[test]
+    #[should_panic(expected = "token: cannot transfer to self")]
     fn test_transfer_to_self() {
         let e = Env::default();
         let admin = Address::generate(&e);
@@ -1542,8 +1548,30 @@ mod test {
         e.mock_all_auths();
         client.mint(&user, &1000);
         client.transfer(&user, &user, &500);
+    }
 
-        assert_eq!(client.balance(&user), 1000);
+    #[test]
+    fn test_transfer_valid_addresses_still_works() {
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let from = Address::generate(&e);
+        let to = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.mint(&from, &1000);
+        client.transfer(&from, &to, &400);
+
+        assert_eq!(client.balance(&from), 600);
+        assert_eq!(client.balance(&to), 400);
     }
 
     #[test]
