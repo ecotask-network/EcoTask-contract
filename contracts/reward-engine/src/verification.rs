@@ -2454,4 +2454,106 @@ mod test {
         let proof_cid = String::from_str(&e, &long_cid);
         client.submit_proof(&oracle, &user, &task_id, &proof_cid);
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20))]
+
+        /// Property: approve_proof succeeds iff reward_amount falls within
+        /// [min_reward, max_reward] AND within the task's declared budget
+        /// (1000, per `setup()`'s create_test_task call).
+        #[test]
+        fn proptest_reward_range_enforced(
+            min_reward in 1i128..=1000,
+            range_width in 0i128..=1000,
+            reward_amount in 1i128..=2500,
+        ) {
+            let (e, admin, oracle, user, task_id, client) = setup();
+            e.mock_all_auths_allowing_non_root_auth();
+
+            let max_reward = min_reward + range_width;
+            client.set_reward_range(&admin, &min_reward, &max_reward);
+
+            let proof_cid = String::from_str(&e, "QmFuzzRange");
+            client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+
+            let result = client.try_approve_proof(&oracle, &user, &task_id, &reward_amount);
+
+            let within_range = reward_amount >= min_reward && reward_amount <= max_reward;
+            let within_budget = reward_amount <= 1000;
+            prop_assert_eq!(result.is_ok(), within_range && within_budget);
+        }
+
+        /// Property: total_paid always equals the running sum of approved
+        /// reward amounts, across a randomized sequence of approvals.
+        #[test]
+        fn proptest_total_paid_accumulation(
+            amounts in prop::collection::vec(1i128..=1000, 1..=5),
+        ) {
+            let e = Env::default();
+            e.mock_all_auths_allowing_non_root_auth();
+
+            let admin = Address::generate(&e);
+            let oracle = Address::generate(&e);
+
+            let token_id = deploy_token(&e, &admin);
+            let reg_id = deploy_registry(&e, &admin);
+            let engine_id = e.register(RewardEngine, ());
+            let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+            let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+            reg_client.add_sponsor(&admin, &engine_id);
+            engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+            let cids = ["QmFuzzTotal0", "QmFuzzTotal1", "QmFuzzTotal2", "QmFuzzTotal3", "QmFuzzTotal4"];
+            let mut expected_total: i128 = 0;
+            for (i, amount) in amounts.iter().enumerate() {
+                let user = Address::generate(&e);
+                let expires_at = e.ledger().timestamp() + 1_000_000;
+                let task_id = reg_client.create_task(
+                    &admin,
+                    &String::from_str(&e, "fuzz-total-paid"),
+                    &soroban_sdk::BytesN::<32>::random(&e),
+                    amount,
+                    &1,
+                    &expires_at,
+                );
+                let cid = String::from_str(&e, cids[i]);
+                engine_client.submit_proof(&oracle, &user, &task_id, &cid);
+                engine_client.approve_proof(&oracle, &user, &task_id, amount);
+                expected_total += amount;
+
+                prop_assert_eq!(engine_client.total_paid(), expected_total);
+            }
+        }
+
+        /// Property: a second approval for the same user succeeds iff the
+        /// elapsed ledgers since the last reward are >= the configured cooldown.
+        #[test]
+        fn proptest_cooldown_boundary(
+            cooldown in 1u64..=100,
+            elapsed_offset in -5i64..=5,
+        ) {
+            let (e, admin, oracle, user, task1, task2, client) = setup_cooldown();
+
+            client.set_user_cooldown(&admin, &cooldown);
+
+            let p1 = String::from_str(&e, "QmFuzzCooldown1");
+            client.submit_proof(&oracle, &user, &task1, &p1);
+            client.approve_proof(&oracle, &user, &task1, &500);
+
+            let base: u32 = e.ledger().sequence();
+            let signed_target = base as i64 + cooldown as i64 + elapsed_offset;
+            let target: u32 = if signed_target < 0 { 0 } else { signed_target as u32 };
+            e.ledger().set_sequence_number(target);
+            let elapsed: u64 = (target as u64).saturating_sub(base as u64);
+
+            let p2 = String::from_str(&e, "QmFuzzCooldown2");
+            client.submit_proof(&oracle, &user, &task2, &p2);
+            let result = client.try_approve_proof(&oracle, &user, &task2, &500);
+
+            prop_assert_eq!(result.is_ok(), elapsed >= cooldown);
+        }
+    }
 }

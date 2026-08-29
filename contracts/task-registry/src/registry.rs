@@ -1952,4 +1952,128 @@ mod test {
             assert_eq!(id, i as u64); // tasks were created 0..n in order
         }
     }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20))]
+
+        /// Property: create_task succeeds iff reward_amount > 0, max_completions > 0,
+        /// and expires_at is strictly in the future — and task_count only advances
+        /// on success.
+        #[test]
+        fn proptest_create_task_validation(
+            reward_amount in -1000i128..=1_000_000_000i128,
+            max_completions in 0u32..=100,
+            expires_offset in -1000i64..=1_000_000i64,
+        ) {
+            let (e, admin, client) = setup();
+            e.mock_all_auths();
+
+            let now = e.ledger().timestamp();
+            let expires_at = if expires_offset < 0 {
+                now.saturating_sub((-expires_offset) as u64)
+            } else {
+                now + expires_offset as u64
+            };
+
+            let count_before = client.task_count();
+            let loc_hash: BytesN<32> = BytesN::random(&e);
+            let task_type = String::from_str(&e, "fuzz-task");
+
+            let result = client.try_create_task(
+                &admin,
+                &task_type,
+                &loc_hash,
+                &reward_amount,
+                &max_completions,
+                &expires_at,
+            );
+
+            let should_succeed = reward_amount > 0 && max_completions > 0 && expires_at > now;
+            prop_assert_eq!(result.is_ok(), should_succeed);
+
+            let count_after = client.task_count();
+            if should_succeed {
+                prop_assert_eq!(count_after, count_before + 1);
+            } else {
+                prop_assert_eq!(count_after, count_before);
+            }
+        }
+
+        /// Property: complete_task succeeds iff the probe timestamp is <= expires_at
+        /// (strict-less expiry semantics), for randomized durations and probe offsets
+        /// straddling the boundary.
+        #[test]
+        fn proptest_expiry_boundary(
+            duration in 1u64..=1_000_000,
+            probe_offset in -5i64..=5,
+        ) {
+            let (e, admin, client) = setup();
+            e.mock_all_auths();
+
+            e.ledger().set_timestamp(1_000_000);
+            let start = e.ledger().timestamp();
+            let expires_at = start + duration;
+
+            let task_id = create_test_task(
+                &client,
+                &admin,
+                &String::from_str(&e, "fuzz-boundary"),
+                1,
+                duration,
+            );
+
+            let probe_timestamp = if probe_offset < 0 {
+                expires_at.saturating_sub((-probe_offset) as u64)
+            } else {
+                expires_at + probe_offset as u64
+            };
+            e.ledger().set_timestamp(probe_timestamp);
+
+            let user = Address::generate(&e);
+            let result = client.try_complete_task(&admin, &task_id, &user);
+
+            if probe_timestamp <= expires_at {
+                prop_assert!(result.is_ok());
+            } else {
+                prop_assert!(result.is_err());
+            }
+        }
+
+        /// Invariant: no sequence of valid complete_task calls ever leaves
+        /// completions > max_completions, and status flips to Completed exactly
+        /// when the cap is reached.
+        #[test]
+        fn proptest_completion_count_invariant(
+            max_completions in 1u32..=8,
+            attempts in 1u32..=12,
+        ) {
+            let (e, admin, client) = setup();
+            e.mock_all_auths();
+
+            let task_id = create_test_task(
+                &client,
+                &admin,
+                &String::from_str(&e, "fuzz-completions"),
+                max_completions,
+                1_000_000,
+            );
+
+            let mut successes = 0u32;
+            for _ in 0..attempts {
+                let user = Address::generate(&e);
+                let result = client.try_complete_task(&admin, &task_id, &user);
+                if result.is_ok() {
+                    successes += 1;
+                }
+                let task = client.get_task(&task_id);
+                prop_assert!(task.completions <= task.max_completions);
+                if task.completions == task.max_completions {
+                    prop_assert_eq!(task.status, TaskStatus::Completed);
+                }
+            }
+            prop_assert!(successes <= max_completions);
+        }
+    }
 }
