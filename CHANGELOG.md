@@ -28,6 +28,7 @@ package version is bumped.
 
 - Fixed documentation for the `oracle` field in the `Verification` struct to explicitly state it records the submitter.
 - Fixed `setup()` tuple unpacking in unit tests in `verification.rs`.
+- **[#83] Deprecated `get_pending_verifications`.** The unbounded entry point is unsafe at scale and now panics immediately with `engine: use get_pending_verifications_paged`. All internal tests have been migrated to the paged variant.
 
 #### `eco-token`
 

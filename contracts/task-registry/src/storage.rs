@@ -11,6 +11,10 @@ pub const PERSISTENT_TTL_EXTEND_TO: u32 = 4_096;
 pub const INSTANCE_TTL_THRESHOLD: u32 = 100;
 pub const INSTANCE_TTL_EXTEND_TO: u32 = 535_680;
 
+/// Maximum allowed page size for paginated queries. Must stay well below the
+/// Soroban per-transaction ledger-entry footprint limit (100 entries).
+pub const MAX_PAGE_SIZE: u32 = 50;
+
 /// Extends the TTL of the contract instance (and code) to
 /// `INSTANCE_TTL_EXTEND_TO` ledgers when it is within
 /// `INSTANCE_TTL_THRESHOLD` ledgers of expiring.

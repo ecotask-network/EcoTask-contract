@@ -682,7 +682,12 @@ fn test_pending_pagination_does_not_scan_resolved_records() {
 
     // Resolved-heavy environment: 180 of the 200 verifications resolved.
     let (e_resolved, client_resolved, _task_id) = build_pending_stress_env(total, resolved);
-    assert_eq!(client_resolved.get_pending_verifications().len(), pending);
+    assert_eq!(
+        client_resolved
+            .get_pending_verifications_paged(&0, &50)
+            .len(),
+        pending
+    );
 
     // One paged call returns exactly `pending` entries. The budget is reset
     // immediately beforehand so the measured cost covers only this call.

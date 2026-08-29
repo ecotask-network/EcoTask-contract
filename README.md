@@ -203,7 +203,7 @@ Submitted (Pending) ──► Approved (mints ECO)
 | `dispute_proof(caller, user, task_id)` | admin | Escalate a pending or rejected proof to dispute |
 | `resolve_dispute(caller, user, task_id, approve, reward_amount)` | admin | Resolve a disputed proof |
 | `get_verification(task_id, user) → Verification` | — | Fetch verification details |
-| `get_pending_verifications() → Vec<Verification>` | — | List all pending verifications |
+| `get_pending_verifications() → Vec<Verification>` | — | **Deprecated** — use `get_pending_verifications_paged` instead |
 | `get_pending_verifications_paged(cursor: u64, limit) → Vec<Verification>` | — | Pageable list of pending verifications (`cursor` = seq of the last returned item; `0` starts at the beginning) |
 | `get_verifications_by_user(user, cursor, limit) → Vec<Verification>` | — | Pageable history of a user's verifications |
 | `total_paid() → i128` | — | Cumulative ECO minted through this engine |

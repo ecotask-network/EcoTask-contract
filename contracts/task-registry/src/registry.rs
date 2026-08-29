@@ -642,6 +642,12 @@ impl RegistryContract {
         limit: u32,
     ) -> soroban_sdk::Vec<u64> {
         storage::extend_instance_ttl(&e);
+        if limit > storage::MAX_PAGE_SIZE {
+            panic!(
+                "registry: page size exceeds maximum of {}",
+                storage::MAX_PAGE_SIZE
+            );
+        }
         storage::read_creator_tasks_paged(&e, &creator, cursor as u64, limit as u64)
     }
 
@@ -660,6 +666,12 @@ impl RegistryContract {
     /// A vector of up to `limit` Task structs, starting from `cursor`.
     pub fn list_tasks(e: Env, cursor: u64, limit: u32) -> soroban_sdk::Vec<Task> {
         storage::extend_instance_ttl(&e);
+        if limit > storage::MAX_PAGE_SIZE {
+            panic!(
+                "registry: page size exceeds maximum of {}",
+                storage::MAX_PAGE_SIZE
+            );
+        }
         let count = storage::read_task_count(&e);
         let mut tasks: soroban_sdk::Vec<Task> = soroban_sdk::Vec::new(&e);
         let mut current = cursor;
@@ -1311,11 +1323,35 @@ mod test {
         let id1 = create_test_task(&client, &admin, &task_type, 1, 1000);
         let id2 = create_test_task(&client, &admin, &task_type, 1, 1000);
 
-        let all = client.list_tasks(&0, &u32::MAX);
+        let all = client.list_tasks(&0, &50);
         assert_eq!(all.len(), 3);
         assert_eq!(all.get(0).unwrap().id, id0);
         assert_eq!(all.get(1).unwrap().id, id1);
         assert_eq!(all.get(2).unwrap().id, id2);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: page size exceeds maximum of 50")]
+    fn test_list_tasks_limit_exceeds_max_panics() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        create_test_task(&client, &admin, &task_type, 1, 1000);
+
+        client.list_tasks(&0, &51);
+    }
+
+    #[test]
+    #[should_panic(expected = "registry: page size exceeds maximum of 50")]
+    fn test_get_tasks_by_creator_paged_limit_exceeds_max_panics() {
+        let (e, admin, client) = setup();
+        e.mock_all_auths();
+
+        let task_type = String::from_str(&e, "tree-planting");
+        create_test_task(&client, &admin, &task_type, 1, 1000);
+
+        client.get_tasks_by_creator_paged(&admin, &0, &51);
     }
 
     #[test]
