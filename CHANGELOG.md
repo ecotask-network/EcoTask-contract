@@ -185,6 +185,16 @@ Error strings:
   every successful minter rotation, containing the `admin` (topic),
   `previous_minter`, and `new_minter` fields.
 
+#### `task-registry` and `reward-engine`
+
+- **[#86] Added proptest fuzz coverage, extending the pattern from #41
+  (previously eco-token only).** `task-registry` gains properties covering
+  create_task input validation, expiry boundary semantics, and the
+  completion-count invariant (`completions <= max_completions` under any
+  valid call sequence). `reward-engine` gains properties covering reward
+  range enforcement, `total_paid` accumulation across randomized approval
+  sequences, and the cooldown boundary (`saturating_sub` behavior from
+  both sides). No production contract logic changed; test-only addition.
 
 ### Changed
 
