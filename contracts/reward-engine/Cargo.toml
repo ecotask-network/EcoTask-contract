@@ -24,3 +24,4 @@ ecotask-types = { path = "../ecotask-types" }
 soroban-sdk = { version = "26.0.1", features = ["testutils"] }
 eco-token = { path = "../eco-token" }
 task-registry = { path = "../task-registry" }
+proptest = "=1.6.0"
