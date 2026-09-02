@@ -35,6 +35,14 @@ package version is bumped.
 - **[#67] Prevent self-transfer allowance drain in `transfer_from` and fix storage re-fetch TOCTOU in `spend_allowance`.**
   `transfer_from` now panics with `"token: cannot transfer to self"` when `from == to`, preventing spenders from burning an owner's allowance without transferring tokens. `spend_allowance` in `storage.rs` now accepts the `&Allowance` struct directly instead of re-fetching from persistent storage with `.unwrap()`, eliminating a potential TOCTOU window.
 
+- **[#84] Reject self-transfer in `transfer` to match `transfer_from`.**
+  `transfer_from` already rejected `from == to` (see #67 above), but `transfer`
+  had no equivalent guard: a self-transfer silently succeeded as a no-op while
+  still consuming the caller's `require_auth()` signature — the same security-
+  model inconsistency #67 was fixed to prevent, just on the other entry point.
+  `transfer` now panics with `"token: cannot transfer to self"` when
+  `from == to`, matching `transfer_from`'s existing message exactly.
+
 #### `reward-engine`
 
 - **[#71] Make `approve_proof` and the approve path of `resolve_dispute`
