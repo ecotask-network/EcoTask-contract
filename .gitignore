@@ -3,3 +3,5 @@ target/
 **/test_snapshots/
 
 .cargo/
+config.bat
+node_modules
