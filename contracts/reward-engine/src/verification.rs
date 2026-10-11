@@ -1,4 +1,4 @@
-use crate::storage;
+﻿use crate::storage;
 use ecotask_types::{Task, TaskStatus};
 use soroban_sdk::{
     contract, contractevent, contractimpl, vec, Address, BytesN, Env, IntoVal, String, Symbol, Val,
@@ -256,8 +256,8 @@ fn collect_pending(e: &Env, cursor: u64, limit: u32) -> soroban_sdk::Vec<Verific
 ///
 /// # Ordering (atomicity) rationale
 ///
-/// This function follows the pattern *read-all → validate-all → call
-/// external contracts → write local state*. Every validation (reward bounds,
+/// This function follows the pattern *read-all â†’ validate-all â†’ call
+/// external contracts â†’ write local state*. Every validation (reward bounds,
 /// task budget, free completion slot, user cooldown) runs before any storage
 /// mutation in this contract, and the `Approved` verification record is only
 /// written *after* both `complete_task` and `mint` have returned.
@@ -266,7 +266,7 @@ fn collect_pending(e: &Env, cursor: u64, limit: u32) -> soroban_sdk::Vec<Verific
 /// panics, but the engine never relies on that: by deferring the local write
 /// until after the external calls succeed, a panic in either call can never
 /// leave an orphaned `Approved` record, a consumed completion slot, or a
-/// `total_paid`/token-supply discrepancy — regardless of sub-call rollback
+/// `total_paid`/token-supply discrepancy â€” regardless of sub-call rollback
 /// semantics. The registry's own double-claim and max-completions guards
 /// remain the authoritative checks; the `completions < max_completions`
 /// check here is defensive pre-validation that fails fast before any state
@@ -306,7 +306,7 @@ fn approve_and_pay(
 
     require_cooldown_elapsed(e, user);
 
-    // Cross-contract calls first — see the doc comment above for why the
+    // Cross-contract calls first â€” see the doc comment above for why the
     // local state mutations are deferred until both have succeeded.
     let registry_id = storage::read_registry(e);
     e.invoke_contract::<Val>(
@@ -910,7 +910,7 @@ impl RewardEngine {
             // Same atomic ordering as `approve_proof`: validation, then the
             // cross-contract calls, then the local Approved write (see
             // `approve_and_pay`). A mint failure here leaves the verification
-            // Disputed — not Approved — with no completed task or payout.
+            // Disputed â€” not Approved â€” with no completed task or payout.
             approve_and_pay(&e, &user, task_id, reward_amount, &mut verification);
         } else {
             verification.status = VerificationStatus::Rejected;
@@ -982,7 +982,7 @@ impl RewardEngine {
     /// last verification already returned (pass 0 for the first page); fetch
     /// the next page with the `seq` of the last returned verification.
     /// Because `seq` values are immutable and unique, resolving an entry
-    /// between pages can never shift or reorder the remaining entries — each
+    /// between pages can never shift or reorder the remaining entries â€” each
     /// pending verification is returned exactly once across the whole
     /// pagination, even when approvals, rejections, or disputes happen
     /// mid-pagination.
@@ -994,7 +994,7 @@ impl RewardEngine {
     /// removed from the pending list, every later entry shifts left by one,
     /// and a caller resuming from a saved offset silently skips an entry.
     /// The cursor is now a sequence number. Persisted offset cursors are
-    /// invalid and must be re-anchored — restart from 0, or read `seq` off
+    /// invalid and must be re-anchored â€” restart from 0, or read `seq` off
     /// the last record already processed.
     ///
     /// # Arguments
@@ -1046,7 +1046,7 @@ impl RewardEngine {
 
     /// Pageable history of a single user's verifications across all tasks,
     /// ordered by submission. Reads only the requested page of the user's
-    /// sequence index — never the user's full history.
+    /// sequence index â€” never the user's full history.
     ///
     /// # Arguments
     ///
@@ -1699,7 +1699,7 @@ mod test {
 
         // A quiet period of INSTANCE_TTL_EXTEND_TO - 1 ledgers (one short
         // of the refreshed TTL) must not break the engine: approve_proof
-        // still succeeds — oracle check, verification lookup, registry
+        // still succeeds â€” oracle check, verification lookup, registry
         // complete_task, and token mint all work with the config intact.
         e.ledger()
             .set_sequence_number(e.ledger().sequence() + INSTANCE_TTL_EXTEND_TO - 1);
@@ -2265,7 +2265,7 @@ mod test {
         client.reject_proof(&oracle, &users[2], &task_id);
         client.dispute_proof(&admin, &users[5], &task_id);
 
-        // Page 1 resumes at seq 2: it must return seqs 4 and 5 — exactly
+        // Page 1 resumes at seq 2: it must return seqs 4 and 5 â€” exactly
         // once, with no skips caused by the mid-pagination resolutions.
         let page1 = client.get_pending_verifications_paged(&cursor, &2);
         assert_eq!(page1.len(), 2);
@@ -2279,7 +2279,7 @@ mod test {
         assert_eq!(page2.len(), 0);
 
         // The unbounded view returns exactly the remaining pending set, in
-        // submission order (seqs 1, 2, 4, 5 — the rejected and disputed
+        // submission order (seqs 1, 2, 4, 5 â€” the rejected and disputed
         // entries are gone).
         let pending = client.get_pending_verifications_paged(&0, &50);
         assert_eq!(pending.len(), 4);
@@ -2451,7 +2451,7 @@ mod test {
     fn test_cooldown_zero_disabled() {
         let (e, _admin, oracle, user, task1, task2, client) = setup_cooldown();
 
-        // Default cooldown is 0 (disabled) — back-to-back rewards succeed.
+        // Default cooldown is 0 (disabled) â€” back-to-back rewards succeed.
         let p1 = String::from_str(&e, "QmCooldownDisabled1");
         client.submit_proof(&oracle, &user, &task1, &p1);
         client.approve_proof(&oracle, &user, &task1, &500);
@@ -2484,6 +2484,108 @@ mod test {
         let long_cid = "a".repeat(129);
         let proof_cid = String::from_str(&e, &long_cid);
         client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(20))]
+
+        /// Property: approve_proof succeeds iff reward_amount falls within
+        /// [min_reward, max_reward] AND within the task's declared budget
+        /// (1000, per `setup()`'s create_test_task call).
+        #[test]
+        fn proptest_reward_range_enforced(
+            min_reward in 1i128..=1000,
+            range_width in 0i128..=1000,
+            reward_amount in 1i128..=2500,
+        ) {
+            let (e, admin, oracle, user, task_id, client) = setup();
+            e.mock_all_auths_allowing_non_root_auth();
+
+            let max_reward = min_reward + range_width;
+            client.set_reward_range(&admin, &min_reward, &max_reward);
+
+            let proof_cid = String::from_str(&e, "QmFuzzRange");
+            client.submit_proof(&oracle, &user, &task_id, &proof_cid);
+
+            let result = client.try_approve_proof(&oracle, &user, &task_id, &reward_amount);
+
+            let within_range = reward_amount >= min_reward && reward_amount <= max_reward;
+            let within_budget = reward_amount <= 1000;
+            prop_assert_eq!(result.is_ok(), within_range && within_budget);
+        }
+
+        /// Property: total_paid always equals the running sum of approved
+        /// reward amounts, across a randomized sequence of approvals.
+        #[test]
+        fn proptest_total_paid_accumulation(
+            amounts in prop::collection::vec(1i128..=1000, 1..=5),
+        ) {
+            let e = Env::default();
+            e.mock_all_auths_allowing_non_root_auth();
+
+            let admin = Address::generate(&e);
+            let oracle = Address::generate(&e);
+
+            let token_id = deploy_token(&e, &admin);
+            let reg_id = deploy_registry(&e, &admin);
+            let engine_id = e.register(RewardEngine, ());
+            let engine_client = RewardEngineClient::new(&e, &engine_id);
+
+            let reg_client = task_registry::RegistryContractClient::new(&e, &reg_id);
+            reg_client.add_sponsor(&admin, &engine_id);
+            engine_client.initialize(&admin, &token_id, &reg_id, &oracle);
+
+            let cids = ["QmFuzzTotal0", "QmFuzzTotal1", "QmFuzzTotal2", "QmFuzzTotal3", "QmFuzzTotal4"];
+            let mut expected_total: i128 = 0;
+            for (i, amount) in amounts.iter().enumerate() {
+                let user = Address::generate(&e);
+                let expires_at = e.ledger().timestamp() + 1_000_000;
+                let task_id = reg_client.create_task(
+                    &admin,
+                    &String::from_str(&e, "fuzz-total-paid"),
+                    &soroban_sdk::BytesN::<32>::random(&e),
+                    amount,
+                    &1,
+                    &expires_at,
+                );
+                let cid = String::from_str(&e, cids[i]);
+                engine_client.submit_proof(&oracle, &user, &task_id, &cid);
+                engine_client.approve_proof(&oracle, &user, &task_id, amount);
+                expected_total += amount;
+
+                prop_assert_eq!(engine_client.total_paid(), expected_total);
+            }
+        }
+
+        /// Property: a second approval for the same user succeeds iff the
+        /// elapsed ledgers since the last reward are >= the configured cooldown.
+        #[test]
+        fn proptest_cooldown_boundary(
+            cooldown in 1u64..=100,
+            elapsed_offset in -5i64..=5,
+        ) {
+            let (e, admin, oracle, user, task1, task2, client) = setup_cooldown();
+
+            client.set_user_cooldown(&admin, &cooldown);
+
+            let p1 = String::from_str(&e, "QmFuzzCooldown1");
+            client.submit_proof(&oracle, &user, &task1, &p1);
+            client.approve_proof(&oracle, &user, &task1, &500);
+
+            let base: u32 = e.ledger().sequence();
+            let signed_target = base as i64 + cooldown as i64 + elapsed_offset;
+            let target: u32 = if signed_target < 0 { 0 } else { signed_target as u32 };
+            e.ledger().set_sequence_number(target);
+            let elapsed: u64 = (target as u64).saturating_sub(base as u64);
+
+            let p2 = String::from_str(&e, "QmFuzzCooldown2");
+            client.submit_proof(&oracle, &user, &task2, &p2);
+            let result = client.try_approve_proof(&oracle, &user, &task2, &500);
+
+            prop_assert_eq!(result.is_ok(), elapsed >= cooldown);
+        }
     }
 
     #[test]

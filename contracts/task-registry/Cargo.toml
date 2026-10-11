@@ -13,3 +13,4 @@ ecotask-types = { path = "../ecotask-types" }
 
 [dev-dependencies]
 soroban-sdk = { version = "26.0.1", features = ["testutils"] }
+proptest = "=1.6.0"
