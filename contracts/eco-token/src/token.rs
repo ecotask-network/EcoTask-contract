@@ -1143,6 +1143,46 @@ mod test {
     }
 
     #[test]
+    fn test_burn_emits_event_with_indexed_from() {
+        use soroban_sdk::testutils::Events as _;
+        use soroban_sdk::vec;
+        use soroban_sdk::{IntoVal, Symbol, Val};
+        let e = Env::default();
+        let admin = Address::generate(&e);
+        let user = Address::generate(&e);
+        let contract_id = e.register(TokenContract, ());
+        let client = TokenContractClient::new(&e, &contract_id);
+
+        client.initialize(
+            &admin,
+            &String::from_str(&e, "ECO"),
+            &String::from_str(&e, "ECO"),
+            &7,
+        );
+
+        e.mock_all_auths();
+        client.mint(&user, &1000);
+        client.burn(&user, &400);
+
+        let events = e.events().all();
+        let expected_topics: soroban_sdk::Vec<Val> = vec![
+            &e,
+            Symbol::new(&e, "burn_event").to_val(),
+            user.clone().into_val(&e),
+        ];
+        let expected_data: Val = soroban_sdk::Map::<Symbol, Val>::from_array(
+            &e,
+            [(Symbol::new(&e, "amount"), 400i128.into_val(&e))],
+        )
+        .into_val(&e);
+
+        assert_eq!(
+            events,
+            vec![&e, (contract_id, expected_topics, expected_data)]
+        );
+    }
+
+    #[test]
     #[should_panic(expected = "token: insufficient balance")]
     fn test_burn_more_than_balance() {
         let e = Env::default();
