@@ -32,6 +32,9 @@ package version is bumped.
 
 #### `eco-token`
 
+- **[#85] Index `from` address in `BurnEvent` topic schema.**
+  `BurnEvent.from` is marked `#[topic]`, ensuring on-chain burn history can be filtered by address, matching the topic indexing conventions of `TransferEvent`, `MintEvent`, and `ApproveEvent`. Added `test_burn_emits_event_with_indexed_from` verifying topic vector layout and payload schema.
+
 - **[#67] Prevent self-transfer allowance drain in `transfer_from` and fix storage re-fetch TOCTOU in `spend_allowance`.**
   `transfer_from` now panics with `"token: cannot transfer to self"` when `from == to`, preventing spenders from burning an owner's allowance without transferring tokens. `spend_allowance` in `storage.rs` now accepts the `&Allowance` struct directly instead of re-fetching from persistent storage with `.unwrap()`, eliminating a potential TOCTOU window.
 
